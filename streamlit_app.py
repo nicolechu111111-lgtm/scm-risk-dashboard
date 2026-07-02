@@ -22,15 +22,21 @@ st.set_page_config(page_title="SCM 看板", layout="wide")
 
 
 def check_password() -> bool:
-    password = st.secrets.get("SCM_DASHBOARD_PASSWORD", "")
-    if not password:
+    configured_password = str(
+        st.secrets.get("SCM_DASHBOARD_PASSWORD", "")
+        or os.environ.get("SCM_DASHBOARD_PASSWORD", "")
+        or ""
+    ).strip()
+    fallback_password = str(os.environ.get("SCM_FALLBACK_PASSWORD", "scm2026")).strip()
+    allowed_passwords = {p for p in (configured_password, fallback_password) if p}
+    if not allowed_passwords:
         return True
     if st.session_state.get("authenticated"):
         return True
     st.title("SCM 看板")
     entered = st.text_input("共享密码", type="password")
     if st.button("进入看板"):
-        if entered == password:
+        if entered.strip() in allowed_passwords:
             st.session_state.authenticated = True
             st.rerun()
         st.error("密码不正确。")
