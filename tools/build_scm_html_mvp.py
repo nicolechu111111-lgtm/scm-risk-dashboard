@@ -16,6 +16,21 @@ WORKBOOK = Path(os.environ.get("SCM_WORKBOOK", "/Users/blue/Documents/跨境供�
 OUT_DIR = Path(os.environ.get("SCM_OUT_DIR", "/Users/blue/Documents/跨境供应链跟单/outputs/scm_html_mvp_20260620"))
 HTML_OUT = OUT_DIR / "SCM Risk Dashboard MVP 2026-06-20.html"
 JSON_OUT = OUT_DIR / "scm_risk_dashboard_data_2026-06-20.json"
+EMAIL_SENT_JSON = os.environ.get("SCM_EMAIL_SENT_JSON", "")
+SHARED_EMAIL_MODE = os.environ.get("SCM_SHARED_EMAIL_MODE", "") == "1"
+
+
+def load_shared_email_sent():
+    if not EMAIL_SENT_JSON:
+        return {}
+    try:
+        path = Path(EMAIL_SENT_JSON)
+        if not path.exists():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
 
 
 def as_date(value):
@@ -852,6 +867,8 @@ def main():
         "generated_at": TODAY.isoformat(),
         "base_date": base_date.isoformat(),
         "source_workbook": str(WORKBOOK),
+        "shared_email_mode": SHARED_EMAIL_MODE,
+        "email_sent": load_shared_email_sent(),
         "customer_code_to_sku": customer_code_to_sku,
         "customer_code_to_upc": customer_code_to_upc,
         "upc_to_sku": upc_to_sku,
@@ -2378,10 +2395,15 @@ function allocationRows() {{
   return Object.values(getAllocations()).filter(isDecisionRow);
 }}
 function getEmailSent() {{
+  if (window.SCM_DATA.shared_email_mode) return window.SCM_DATA.email_sent || {{}};
   try {{ return JSON.parse(localStorage.getItem('scm_warehouse_email_sent') || '{{}}'); }}
   catch {{ return {{}}; }}
 }}
 function saveEmailSent(so, sent) {{
+  if (window.SCM_DATA.shared_email_mode) {{
+    alert('线上团队版请在左侧“仓库邮件共享确认”里标记，标记后所有人刷新都会同步。');
+    return;
+  }}
   const all = getEmailSent();
   if (sent) all[so] = {{so, sent_at:new Date().toISOString()}};
   else delete all[so];
