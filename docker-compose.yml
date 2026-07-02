@@ -1,0 +1,16 @@
+services:
+  scm-dashboard:
+    build: .
+    container_name: scm-dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SCM_DASHBOARD_PASSWORD: "${SCM_DASHBOARD_PASSWORD}"
+      SCM_DATA_DIR: "/data"
+      PORT: "8080"
+    volumes:
+      - scm-dashboard-data:/data
+
+volumes:
+  scm-dashboard-data:
