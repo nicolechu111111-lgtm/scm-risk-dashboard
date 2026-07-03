@@ -18,6 +18,8 @@ HTML_OUT = OUT_DIR / "SCM Risk Dashboard MVP 2026-06-20.html"
 JSON_OUT = OUT_DIR / "scm_risk_dashboard_data_2026-06-20.json"
 EMAIL_SENT_JSON = os.environ.get("SCM_EMAIL_SENT_JSON", "")
 SHARED_EMAIL_MODE = os.environ.get("SCM_SHARED_EMAIL_MODE", "") == "1"
+SHARED_STATE_JSON = os.environ.get("SCM_SHARED_STATE_JSON", "")
+SHARED_STATE_MODE = os.environ.get("SCM_SHARED_STATE_MODE", "") == "1"
 
 
 def load_shared_email_sent():
@@ -25,6 +27,19 @@ def load_shared_email_sent():
         return {}
     try:
         path = Path(EMAIL_SENT_JSON)
+        if not path.exists():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_shared_state():
+    if not SHARED_STATE_JSON:
+        return {}
+    try:
+        path = Path(SHARED_STATE_JSON)
         if not path.exists():
             return {}
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -863,12 +878,17 @@ def main():
                 }
             )
 
+    shared_state = load_shared_state()
     data = {
         "generated_at": TODAY.isoformat(),
         "base_date": base_date.isoformat(),
         "source_workbook": str(WORKBOOK),
+        "shared_state_mode": SHARED_STATE_MODE,
         "shared_email_mode": SHARED_EMAIL_MODE,
         "email_sent": load_shared_email_sent(),
+        "manual_allocations": shared_state.get("manual_allocations", {}) if isinstance(shared_state.get("manual_allocations", {}), dict) else {},
+        "transit_settings": shared_state.get("transit_settings", {"stateDays": {}, "dcDays": {}}) if isinstance(shared_state.get("transit_settings", {}), dict) else {"stateDays": {}, "dcDays": {}},
+        "confirmed_sps_imports": shared_state.get("confirmed_sps_imports", []) if isinstance(shared_state.get("confirmed_sps_imports", []), list) else [],
         "customer_code_to_sku": customer_code_to_sku,
         "customer_code_to_upc": customer_code_to_upc,
         "upc_to_sku": upc_to_sku,
@@ -1351,10 +1371,15 @@ function simpleTable(items, cols) {{
 }}
 function allocationKey(sku, so) {{ return `${{sku}}__${{so}}`; }}
 function getAllocations() {{
+  if (window.SCM_DATA.shared_state_mode) return window.SCM_DATA.manual_allocations || {{}};
   try {{ return JSON.parse(localStorage.getItem('scm_manual_allocations') || '{{}}'); }}
   catch {{ return {{}}; }}
 }}
 function saveAllocation(sku, so, field, value) {{
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版请在左侧“人工分配共享管理”里维护，保存后所有人刷新都会同步。');
+    return;
+  }}
   const all = getAllocations();
   const key = allocationKey(sku, so);
   all[key] = all[key] || {{sku, so}};
@@ -2628,10 +2653,15 @@ const DEFAULT_TRANSIT_DAYS = {{CA:2,NV:3,AZ:3,OR:4,WA:4,UT:5,CO:5,TX:5,IL:7,GA:8
 const DEFAULT_DC_TRANSIT_DAYS = {{'MIRA LOMA':2,'RENO':3,'TEXAS':5,'JOLIET':7,'BRASELTON':8,'CRANBURY':9,'PSP DISTRIBUTION-SE':7,'PSP DISTRIBUTION-OR':8}};
 const DEFAULT_DC_STATE_MAP = {{'MIRA LOMA':'CA','RENO':'NV','TEXAS':'TX','JOLIET':'IL','BRASELTON':'GA','CRANBURY':'NJ','PSP DISTRIBUTION-OR':'OR','PSP DISTRIBUTION-SE':'GA'}};
 function getTransitSettings() {{
+  if (window.SCM_DATA.shared_state_mode) return window.SCM_DATA.transit_settings || {{stateDays:{{}}, dcDays:{{}}}};
   try {{ return JSON.parse(localStorage.getItem('scm_transit_settings') || '{{"stateDays":{{}},"dcDays":{{}}}}'); }}
   catch {{ return {{stateDays:{{}}, dcDays:{{}}}}; }}
 }}
 function saveTransitSettings(settings) {{
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版请在左侧“运输设置共享管理”里维护，保存后所有人刷新都会同步。');
+    return;
+  }}
   localStorage.setItem('scm_transit_settings', JSON.stringify(settings));
 }}
 function extractState(dc) {{
@@ -2971,6 +3001,7 @@ function renderSpsDiff(diff) {{
   document.getElementById('spsResults').innerHTML = simpleTable(diff, [['issue','问题'],['upc_status','UPC检查'],['case_pack_status','箱规检查'],['order','SO/PO'],['raw_sku','客户编码'],['sku','SKU'],['sps_upc','SPS UPC'],['expected_upc','应有UPC'],['case_pack','箱规'],['case_pack_remainder','箱规余数'],['product','产品'],['customer','客户'],['dc','客户仓'],['order_date','订单日期'],['etd','ETD'],['sps_qty','SPS数量'],['unit_price','单价'],['followup_qty','Follow Up数量'],['qty_diff','数量差异'],['source_file','文件']]);
 }}
 function getConfirmedImports() {{
+  if (window.SCM_DATA.shared_state_mode) return window.SCM_DATA.confirmed_sps_imports || [];
   try {{ return JSON.parse(localStorage.getItem('scm_confirmed_sps_imports') || '[]'); }}
   catch {{ return []; }}
 }}
@@ -3093,6 +3124,10 @@ document.addEventListener('change', (e) => {{
 document.addEventListener('click', (e) => {{
   const btn = e.target.closest('.clear-sku-allocation');
   if (!btn) return;
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版请在左侧“人工分配共享管理”里清空或修改。');
+    return;
+  }}
   const sku = btn.dataset.sku;
   const all = getAllocations();
   for (const key of Object.keys(all)) {{
@@ -3136,6 +3171,10 @@ document.addEventListener('change', (e) => {{
 document.addEventListener('click', (e) => {{
   const btn = e.target.closest('#resetTransitSettings');
   if (!btn) return;
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版请在左侧“运输设置共享管理”里维护。');
+    return;
+  }}
   localStorage.removeItem('scm_transit_settings');
   if (lastSpsDiff.length) renderSpsDiff(lastSpsDiff);
   renderDynamicViews();
@@ -3176,6 +3215,10 @@ document.getElementById('uploadFollowup')?.addEventListener('click', async () =>
   }}
 }});
 document.getElementById('confirmSpsImport')?.addEventListener('click', () => {{
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版的 SPS 确认导入会改到左侧共享区；当前页仍可预览、导出，但不会写入团队共享状态。');
+    return;
+  }}
   if (!lastSpsDiff.length) {{ alert('Import SPS files first.'); return; }}
   const upcIssues = lastSpsDiff.filter(x => x.upc_status && x.upc_status !== 'OK').length;
   const packIssues = lastSpsDiff.filter(x => x.case_pack_status && x.case_pack_status !== 'OK').length;
@@ -3201,6 +3244,10 @@ document.getElementById('clearSps')?.addEventListener('click', () => {{
   document.getElementById('spsResults').innerHTML = '<div class="hint">No SPS files imported yet.</div>';
 }});
 document.getElementById('clearConfirmedImports')?.addEventListener('click', () => {{
+  if (window.SCM_DATA.shared_state_mode) {{
+    alert('线上团队版的 SPS 共享确认记录请在左侧共享区维护。');
+    return;
+  }}
   localStorage.removeItem('scm_confirmed_sps_imports');
   renderImportNotice();
   document.getElementById('confirmedSpsLines')?.remove();
