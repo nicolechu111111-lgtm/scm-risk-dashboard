@@ -247,11 +247,13 @@ def main():
     safety_stock_by_sku = {}
     moq_by_sku = {}
     total_stock_by_sku = {}
+    inventory_turnover_by_sku = {}
     sum_case_pack_by_sku = {}
     purchase_suggestion_by_sku = {}
     sum_sku_col = col(sum_cols, "Item Code", default=0)
     sum_onhand_col = col(sum_cols, "Onhand Stock", default=7 if ws_sum.max_column > 7 else 2)
     sum_total_stock_col = col(sum_cols, "Total Stock", default=None)
+    sum_inventory_turnover_col = col(sum_cols, "Inventory Turnover", default=None)
     sum_forecast_col = col(sum_cols, "Weekly Forecast", default=None)
     sum_lt_col = col(sum_cols, "LT", default=None)
     sum_ss_col = col(sum_cols, "SS", default=None)
@@ -263,6 +265,7 @@ def main():
         if sku:
             base_stock[sku] = as_num(value_at(row, sum_onhand_col))
             total_stock_by_sku[sku] = as_num(value_at(row, sum_total_stock_col))
+            inventory_turnover_by_sku[sku] = as_num(value_at(row, sum_inventory_turnover_col))
             weekly_forecast_by_sku[sku] = as_num(value_at(row, sum_forecast_col))
             sum_lt_by_sku[sku] = as_num(value_at(row, sum_lt_col)) or lead_weeks.get(sku, 10)
             safety_stock_by_sku[sku] = as_num(value_at(row, sum_ss_col))
@@ -793,6 +796,9 @@ def main():
         moq = int(moq_by_sku.get(sku, 0) or 0)
         case_pack = int(sum_case_pack_by_sku.get(sku, 0) or case_pack_by_sku.get(sku, 0) or 0)
         total_stock = int(total_stock_by_sku.get(sku, 0))
+        current_turnover_weeks = inventory_turnover_by_sku.get(sku, 0)
+        if not current_turnover_weeks and weekly_forecast:
+            current_turnover_weeks = round(total_stock / weekly_forecast, 1)
         target_weeks = lead_time_weeks + safety_weeks + 2
         target_stock = int(weekly_forecast * max(target_weeks, 0))
         raw_gap = max(target_stock - total_stock, 0)
@@ -811,6 +817,7 @@ def main():
                 "planned_incoming": planned_incoming,
                 "total_stock": total_stock,
                 "weekly_forecast": weekly_forecast,
+                "current_turnover_weeks": current_turnover_weeks,
                 "lead_time_weeks": lead_time_weeks,
                 "safety_stock_weeks": safety_weeks,
                 "buffer_weeks": 2,
@@ -1159,7 +1166,7 @@ td.long, th.long {{ min-width:240px; }}
   <div class="tab" id="logistics"></div>
   <div class="tab" id="needby"></div>
   <div class="tab" id="replenishment">
-    {table("Replenishment Suggestion / 预测补货建议", data["replenishment"], [("status","状态"),("sku","SKU"),("product","产品"),("weekly_forecast","周预测"),("lead_time_weeks","LT周数"),("safety_stock_weeks","安全库存周数"),("buffer_weeks","缓冲周数"),("target_weeks","目标周数"),("target_stock","目标库存"),("total_stock","Total Stock"),("formula_gap","公式缺口"),("case_pack","箱规"),("suggested_po_qty","建议下单量"),("sum_purchase_suggestion","Sum原建议"),("order_risk_gap","订单风险缺口"),("onhand","当前库存"),("open_demand","未交货需求"),("confirmed_incoming","确认在途"),("planned_incoming","预计在途"),("moq","MOQ"),("action","说明")], "主公式：MAX(0, Weekly Forecast × (LT + SS + 2) - Total Stock)，再按箱规向上取整。订单风险缺口只做参考，不参与建议采购量。")}
+    {table("Replenishment Suggestion / 预测补货建议", data["replenishment"], [("status","状态"),("sku","SKU"),("product","产品"),("weekly_forecast","周预测"),("current_turnover_weeks","当前周转周数"),("lead_time_weeks","LT周数"),("safety_stock_weeks","安全库存周数"),("buffer_weeks","缓冲周数"),("target_weeks","目标周数"),("target_stock","目标库存"),("total_stock","Total Stock"),("formula_gap","公式缺口"),("case_pack","箱规"),("suggested_po_qty","建议下单量"),("sum_purchase_suggestion","Sum原建议"),("order_risk_gap","订单风险缺口"),("onhand","当前库存"),("open_demand","未交货需求"),("confirmed_incoming","确认在途"),("planned_incoming","预计在途"),("moq","MOQ"),("action","说明")], "主公式：MAX(0, Weekly Forecast × (LT + SS + 2) - Total Stock)，再按箱规向上取整。订单风险缺口只做参考，不参与建议采购量。")}
   </div>
   <div class="tab" id="transit"></div>
   <div class="tab" id="workbook">
@@ -2361,7 +2368,7 @@ const EXPORT_COLS = {{
   so_board:['status','so','customer','delivery_center','latest_ship','required_arrival','suggested_customer_date','line_count','issue_skus','critical_skus','planned_skus','watch_skus','confirmed_po_skus','action'],
   so_lines:['status','system_status','so','customer','delivery_center','sku','product','qty','risk_qty','system_risk_qty','manual_stock_qty','allocation_issue_skus','allocation_critical_skus','latest_ship','required_arrival','suggested_customer_date','stock_before','stock_used','cover_type','cover','uncovered','action'],
   sku_summary:['status','sku','product','current_onhand','open_demand','confirmed_incoming_qty','planned_incoming_qty','shortage_qty','issue_qty','follow_po','follow_bol','cover_eta','latest_wh_arrival','gap_days','affected_so_count','affected_sos','action'],
-  replenishment:['status','sku','product','weekly_forecast','lead_time_weeks','safety_stock_weeks','buffer_weeks','target_weeks','target_stock','total_stock','formula_gap','case_pack','suggested_po_qty','sum_purchase_suggestion','order_risk_gap','onhand','open_demand','confirmed_incoming','planned_incoming','moq','action'],
+  replenishment:['status','sku','product','weekly_forecast','current_turnover_weeks','lead_time_weeks','safety_stock_weeks','buffer_weeks','target_weeks','target_stock','total_stock','formula_gap','case_pack','suggested_po_qty','sum_purchase_suggestion','order_risk_gap','onhand','open_demand','confirmed_incoming','planned_incoming','moq','action'],
   po_impact:['po','sku_count','so_count','critical_lines','planned_lines','watch_lines','late_qty'],
   logistics_actions:['category','po','bol','related_pos','sku','so','customer','delivery_center','urgent_line_count','later_so_count','urgent_skus','earliest_required_arrival','required_arrival','latest_wh_ship','latest_wh_arrival','latest_factory_ship','planned_factory_ship','current_wh_eta','port_eta','planned_wh_eta','warehouse_days_left','suggested_customer_date','affected_so_count','affected_sku_count','qty','gap_days','status','forwarder_action','warehouse_action','action'],
   inbound_need_by:['status','sku','product','po','bol','qty','used_qty','current_wh_eta','need_by_wh_date','need_source','first_affected_so','forecast_week','weekly_forecast','days_margin','reliability','factory_date','sailing_date','port_eta','action'],
