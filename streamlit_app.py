@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import csv
+import io
 import json
 import subprocess
 import sys
@@ -348,6 +350,187 @@ def dc_key(customer: str, dc: str) -> str:
     return f"{customer}__{dc}"
 
 
+def normalize_order(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def normalize_sku(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def normalize_upc(value) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def normalize_qty(value) -> float:
+    try:
+        text = str(value or "").replace(",", "").strip()
+        return float(text) if text else 0
+    except Exception:
+        return 0
+
+
+def normalize_date_text(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%m/%d/%y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(text).date().isoformat()
+    except Exception:
+        return text
+
+
+def pick(row: dict, names: list[str]) -> str:
+    lower_map = {str(k).strip().casefold(): v for k, v in row.items()}
+    for name in names:
+        value = lower_map.get(name.casefold())
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def is_excluded_sps(customer: str, order: str, dc: str) -> bool:
+    text = f"{customer} {order} {dc}".casefold()
+    if "canada" in text:
+        return True
+    return "petco" in text and ("mx" in text or "mexico" in text)
+
+
+def decode_upload(uploaded) -> str:
+    data = uploaded.getvalue()
+    for encoding in ("utf-8-sig", "utf-8", "latin1"):
+        try:
+            return data.decode(encoding)
+        except Exception:
+            pass
+    return data.decode("utf-8", errors="ignore")
+
+
+def parse_sps_csv_uploads(files, data: dict) -> list[dict]:
+    customer_code_to_sku = data.get("customer_code_to_sku", {})
+    upc_to_sku = data.get("upc_to_sku", {})
+    product_name_by_sku = data.get("product_name_by_sku", {})
+    customer_code_to_upc = data.get("customer_code_to_upc", {})
+    product_upc_by_sku = data.get("product_upc_by_sku", {})
+    case_pack_by_sku = data.get("case_pack_by_sku", {})
+
+    raw_lines = []
+    for uploaded in files or []:
+        text = decode_upload(uploaded)
+        sample = text[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        for row in reader:
+            order = normalize_order(pick(row, ["OrderKey", "PO Number", "SPS PO", "PO", "Purchase Order", "Purchase Order Number", "Retailers PO", "Customer PO", "Order", "Order Number"]))
+            raw_sku = normalize_sku(pick(row, ["SKUKey", "SKU", "Buyers Catalog or Stock Keeping #", "Buyer Part Number", "Vendor Part Number", "Item", "Item Code", "Product Code"]))
+            upc = normalize_upc(pick(row, ["UPC/EAN", "UPC", "GTIN"]))
+            sku = normalize_sku(customer_code_to_sku.get(raw_sku) or upc_to_sku.get(upc) or raw_sku)
+            qty = normalize_qty(pick(row, ["SPS Qty", "Qty Ordered", "Quantity", "Qty", "Order Qty", "ORD QTY", "Quantity Ordered"]))
+            if not raw_sku and not qty:
+                continue
+            raw_lines.append(
+                {
+                    "order": order,
+                    "raw_sku": raw_sku,
+                    "sku": sku,
+                    "upc": upc,
+                    "qty": qty,
+                    "unit_price": normalize_qty(pick(row, ["Unit Price", "Price", "Unit Cost", "Cost"])),
+                    "customer": pick(row, ["Partner", "Trading Partner", "Customer", "Retailer"]),
+                    "dc": pick(row, ["Ship To Name", "Ship To", "Delivery Center", "Ship To Location", "Location"]),
+                    "orderDate": normalize_date_text(pick(row, ["PO Date", "Order Date", "Date"])),
+                    "requested": normalize_date_text(pick(row, ["Delivery Dates", "Requested Delivery Date", "Delivery Date", "Requested Date", "ETD"])),
+                    "shipDate": normalize_date_text(pick(row, ["Ship Dates", "Ship Date", "Requested Ship Date"])),
+                    "product": pick(row, ["SPS Product Name", "Product Name", "Description", "Item Description"]) or product_name_by_sku.get(sku, ""),
+                    "source_file": uploaded.name,
+                }
+            )
+
+    grouped = {}
+    for line in raw_lines:
+        if not line["order"] or not line["sku"] or not line["qty"]:
+            key = f"{line['order']}__{line['sku']}__bad__{len(grouped)}"
+            grouped[key] = {**line, "issue": "Missing required fields"}
+            continue
+        key = f"{line['order']}__{line['sku']}"
+        prev = grouped.get(key)
+        if not prev:
+            grouped[key] = {**line}
+        else:
+            prev["qty"] += line["qty"]
+            if not prev.get("unit_price") and line.get("unit_price"):
+                prev["unit_price"] = line["unit_price"]
+            if not prev.get("upc") and line.get("upc"):
+                prev["upc"] = line["upc"]
+
+    existing = {}
+    for line in data.get("so_lines", []):
+        key = f"{normalize_order(line.get('so'))}__{normalize_sku(line.get('sku'))}"
+        existing[key] = existing.get(key, 0) + normalize_qty(line.get("qty"))
+
+    diff = []
+    for line in grouped.values():
+        if line.get("issue"):
+            diff.append(line)
+            continue
+        key = f"{line['order']}__{line['sku']}"
+        followup_qty = existing.get(key, 0)
+        issue = "New in SPS" if not followup_qty else ("Qty mismatch" if abs(followup_qty - line["qty"]) > 0.0001 else "Already in Follow Up")
+        expected_upc = normalize_upc(customer_code_to_upc.get(line["raw_sku"]) or product_upc_by_sku.get(line["sku"]) or "")
+        actual_upc = normalize_upc(line.get("upc", ""))
+        if not actual_upc:
+            upc_status = "Missing UPC"
+        elif expected_upc and actual_upc != expected_upc:
+            upc_status = "UPC mismatch"
+        elif not expected_upc and actual_upc not in upc_to_sku:
+            upc_status = "UPC not in Product List"
+        else:
+            upc_status = "OK"
+        pack = int(float(case_pack_by_sku.get(line["sku"], 0) or 0))
+        remainder = int(line["qty"] % pack) if pack else ""
+        case_pack_status = "No Case Pack" if not pack else ("OK" if remainder == 0 else "Qty not case-pack multiple")
+        diff.append(
+            {
+                "issue": issue,
+                "upc_status": upc_status,
+                "case_pack_status": case_pack_status,
+                "order": line["order"],
+                "raw_sku": line["raw_sku"],
+                "sku": line["sku"],
+                "product": line["product"] or product_name_by_sku.get(line["sku"], ""),
+                "customer": line["customer"],
+                "dc": line["dc"],
+                "order_date": line["orderDate"],
+                "etd": line["requested"],
+                "ship_date": line["shipDate"],
+                "sps_qty": int(line["qty"]) if float(line["qty"]).is_integer() else line["qty"],
+                "unit_price": line.get("unit_price") or "",
+                "followup_qty": int(followup_qty) if float(followup_qty).is_integer() else followup_qty,
+                "qty_diff": line["qty"] - followup_qty,
+                "sps_upc": actual_upc,
+                "expected_upc": expected_upc or actual_upc,
+                "case_pack": pack or "",
+                "case_pack_remainder": remainder,
+                "source_file": line["source_file"],
+            }
+        )
+    diff = [x for x in diff if not is_excluded_sps(x.get("customer", ""), x.get("order", ""), x.get("dc", ""))]
+    return sorted(diff, key=lambda x: (str(x.get("issue", "")), str(x.get("order", "")), str(x.get("sku", ""))))
+
+
 def render_shared_transit_controls(data: dict) -> None:
     state = load_shared_state()
     settings = state["transit_settings"]
@@ -402,6 +585,60 @@ def render_shared_transit_controls(data: dict) -> None:
                 state["transit_settings"] = settings
                 save_shared_state(state)
                 append_log("更新州运输天数", f"{st_code} = {settings['stateDays'][st_code]}")
+                current = latest_upload()
+                if current:
+                    recalculate(current)
+                st.rerun()
+
+
+def render_shared_sps_controls(data: dict) -> None:
+    state = load_shared_state()
+    confirmed = state.get("confirmed_sps_imports", [])
+
+    st.sidebar.divider()
+    st.sidebar.header("SPS 新单共享导入")
+    st.sidebar.caption("确认后会纳入团队共享计算；已回填到 Follow Up 的订单会自动排除，避免重复需求。")
+    files = st.sidebar.file_uploader("选择 SPS CSV 文件", type=["csv", "txt"], accept_multiple_files=True, key="shared_sps_files")
+    if files:
+        diff = parse_sps_csv_uploads(files, data)
+        new_rows = [x for x in diff if x.get("issue") == "New in SPS"]
+        upc_issues = [x for x in diff if x.get("upc_status") and x.get("upc_status") != "OK"]
+        pack_issues = [x for x in diff if x.get("case_pack_status") and x.get("case_pack_status") != "OK"]
+        st.sidebar.write(f"SPS 新增：{len(new_rows)}")
+        st.sidebar.write(f"UPC 异常：{len(upc_issues)} / 箱规异常：{len(pack_issues)}")
+        with st.sidebar.expander("预览前 20 行", expanded=False):
+            preview_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "sps_qty", "upc_status", "case_pack_status"]
+            st.dataframe([{k: row.get(k, "") for k in preview_cols} for row in diff[:20]], use_container_width=True, hide_index=True)
+        allow_issue = True
+        if upc_issues or pack_issues:
+            allow_issue = st.sidebar.checkbox("存在 UPC/箱规异常，仍确认导入", value=False)
+        if st.sidebar.button("确认导入 SPS 新单到团队看板", disabled=not new_rows or not allow_issue):
+            batch = {
+                "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+                "diff": diff,
+                "new_rows": new_rows,
+                "risk": [],
+                "source_files": [f.name for f in files],
+            }
+            confirmed.insert(0, batch)
+            state["confirmed_sps_imports"] = confirmed[:30]
+            save_shared_state(state)
+            append_log("确认导入 SPS 新单", f"{len(new_rows)} 行 / {', '.join(batch['source_files'])}")
+            current = latest_upload()
+            if current:
+                recalculate(current)
+            st.rerun()
+
+    with st.sidebar.expander(f"已确认 SPS 批次 ({len(confirmed)})", expanded=False):
+        if not confirmed:
+            st.caption("暂无共享确认 SPS 批次。")
+        for idx, batch in enumerate(confirmed[:20]):
+            st.caption(f"{batch.get('confirmed_at','')} · {len(batch.get('new_rows', []))} 行")
+            if st.button("删除该批次", key=f"delete_sps_batch_{idx}"):
+                confirmed.pop(idx)
+                state["confirmed_sps_imports"] = confirmed
+                save_shared_state(state)
+                append_log("删除 SPS 确认批次", str(batch.get("confirmed_at", "")))
                 current = latest_upload()
                 if current:
                     recalculate(current)
@@ -470,6 +707,7 @@ if live_data:
     render_shared_email_controls(live_data)
     render_shared_allocation_controls(live_data)
     render_shared_transit_controls(live_data)
+    render_shared_sps_controls(live_data)
     render_history_and_logs()
 
 html = live_html().read_text(encoding="utf-8")
