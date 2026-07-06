@@ -266,7 +266,23 @@ def render_shared_allocation_controls(data: dict) -> None:
     st.sidebar.header("人工分配共享管理")
     st.sidebar.caption("这里保存后，所有人刷新都会看到同一套人工分配。")
     selected_sku = st.sidebar.selectbox("选择 SKU", sku_options, key="shared_alloc_sku")
-    sku_lines = [x for x in lines if str(x.get("sku", "")) == selected_sku]
+    raw_sku_lines = [x for x in lines if str(x.get("sku", "")) == selected_sku]
+    sku_lines_by_so = {}
+    for line in raw_sku_lines:
+        so = str(line.get("so", ""))
+        if not so:
+            continue
+        if so not in sku_lines_by_so:
+            sku_lines_by_so[so] = dict(line)
+            sku_lines_by_so[so]["qty"] = 0
+        try:
+            sku_lines_by_so[so]["qty"] += int(float(line.get("qty", 0) or 0))
+        except Exception:
+            pass
+    sku_lines = sorted(
+        sku_lines_by_so.values(),
+        key=lambda x: (str(x.get("latest_ship", "") or "9999-12-31"), str(x.get("required_arrival", "") or "9999-12-31"), str(x.get("so", ""))),
+    )
     sku_info = next((x for x in data.get("sku_summary", []) if str(x.get("sku", "")) == selected_sku), {})
     if not sku_info:
         sku_info = data.get("inventory_by_sku", {}).get(selected_sku, {})
