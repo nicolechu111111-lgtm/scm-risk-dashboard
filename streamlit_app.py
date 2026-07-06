@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -24,6 +25,7 @@ EMAIL_SENT_PATH = DATA_DIR / "warehouse_email_sent.json"
 SHARED_STATE_PATH = DATA_DIR / "shared_state.json"
 UPLOAD_HISTORY_PATH = DATA_DIR / "upload_history.json"
 OPERATION_LOG_PATH = DATA_DIR / "operation_log.json"
+BACKUP_MANIFEST = "scm_dashboard_backup_manifest.json"
 
 
 st.set_page_config(page_title="SCM 看板", layout="wide")
@@ -129,6 +131,61 @@ def append_upload_history(filename: str) -> None:
         rows = []
     rows.insert(0, {"time": datetime.now().isoformat(timespec="seconds"), "file": filename})
     save_json_file(UPLOAD_HISTORY_PATH, rows[:80])
+
+
+def backup_bytes() -> bytes | None:
+    current = latest_upload()
+    if not current:
+        return None
+    payload = io.BytesIO()
+    manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "latest_upload": current.name,
+        "note": "SCM dashboard recovery package. Restore this from the sidebar if Streamlit resets the runtime files.",
+    }
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(BACKUP_MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))
+        zf.write(current, f"uploads/{current.name}")
+        for path in [EMAIL_SENT_PATH, SHARED_STATE_PATH, UPLOAD_HISTORY_PATH, OPERATION_LOG_PATH]:
+            if path.exists():
+                zf.write(path, f"state/{path.name}")
+    return payload.getvalue()
+
+
+def restore_backup(uploaded_backup) -> tuple[bool, str]:
+    try:
+        raw = uploaded_backup.getvalue()
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            names = set(zf.namelist())
+            upload_names = [name for name in names if name.startswith("uploads/") and name.lower().endswith((".xlsx", ".xlsm"))]
+            if not upload_names:
+                return False, "恢复包里没有 Follow Up 表格。"
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            for name in upload_names:
+                target = UPLOAD_DIR / Path(name).name
+                target.write_bytes(zf.read(name))
+            allowed_state = {
+                f"state/{EMAIL_SENT_PATH.name}": EMAIL_SENT_PATH,
+                f"state/{SHARED_STATE_PATH.name}": SHARED_STATE_PATH,
+                f"state/{UPLOAD_HISTORY_PATH.name}": UPLOAD_HISTORY_PATH,
+                f"state/{OPERATION_LOG_PATH.name}": OPERATION_LOG_PATH,
+            }
+            for name, target in allowed_state.items():
+                if name in names:
+                    target.write_bytes(zf.read(name))
+        current = latest_upload()
+        if not current:
+            return False, "恢复失败：没有找到可计算的 Follow Up。"
+        ok, message = recalculate(current)
+        if not ok:
+            return False, message
+        append_log("恢复团队状态备份", uploaded_backup.name)
+        return True, "已恢复团队状态，并重新计算看板。"
+    except zipfile.BadZipFile:
+        return False, "这个文件不是有效的备份 zip。"
+    except Exception as exc:
+        return False, f"恢复失败：{exc}"
 
 
 def recalculate(workbook: Path) -> tuple[bool, str]:
@@ -707,7 +764,29 @@ with st.sidebar:
         st.caption(f"当前文件：{current.name}")
     st.caption("免费部署版本的文件保存在应用运行环境内；如果平台休眠或重建，可能需要重新上传。")
 
-if not live_html().exists():
+    st.divider()
+    st.header("请假期间备份/恢复")
+    st.caption("用于免费平台重启后的应急恢复；正常每天使用不需要点。")
+    backup = backup_bytes()
+    if backup:
+        st.download_button(
+            "下载当前团队状态备份",
+            data=backup,
+            file_name=f"SCM看板团队状态备份_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+            mime="application/zip",
+        )
+    else:
+        st.caption("上传 Follow Up 后才会生成备份。")
+    restore_file = st.file_uploader("恢复团队状态备份 zip", type=["zip"], key="restore_team_backup")
+    if restore_file and st.button("恢复并重新计算", key="restore_team_backup_btn"):
+        ok, message = restore_backup(restore_file)
+        if ok:
+            st.success(message)
+            st.rerun()
+        else:
+            st.error(message)
+
+if not live_html().exists() or not live_json().exists():
     current = latest_upload()
     if current:
         ok, message = recalculate(current)
