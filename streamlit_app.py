@@ -764,28 +764,6 @@ with st.sidebar:
         st.caption(f"当前文件：{current.name}")
     st.caption("免费部署版本的文件保存在应用运行环境内；如果平台休眠或重建，可能需要重新上传。")
 
-    st.divider()
-    st.header("请假期间备份/恢复")
-    st.caption("用于免费平台重启后的应急恢复；正常每天使用不需要点。")
-    backup = backup_bytes()
-    if backup:
-        st.download_button(
-            "下载当前团队状态备份",
-            data=backup,
-            file_name=f"SCM看板团队状态备份_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
-            mime="application/zip",
-        )
-    else:
-        st.caption("上传 Follow Up 后才会生成备份。")
-    restore_file = st.file_uploader("恢复团队状态备份 zip", type=["zip"], key="restore_team_backup")
-    if restore_file and st.button("恢复并重新计算", key="restore_team_backup_btn"):
-        ok, message = restore_backup(restore_file)
-        if ok:
-            st.success(message)
-            st.rerun()
-        else:
-            st.error(message)
-
 if not live_html().exists() or not live_json().exists():
     current = latest_upload()
     if current:
