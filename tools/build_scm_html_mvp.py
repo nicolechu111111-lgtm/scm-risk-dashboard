@@ -1094,6 +1094,14 @@ td.long, th.long {{ min-width:240px; }}
 .ok {{ background:var(--ok); }}
 .empty {{ text-align:center; color:var(--muted); padding:24px; }}
 .search {{ margin:0 0 12px; width:320px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; }}
+.search-results {{ display:none; margin:-2px 0 12px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; }}
+.search-results.active {{ display:block; }}
+.search-result-head {{ padding:9px 12px; background:var(--head); font-weight:700; }}
+.search-result-list {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:0; }}
+.search-result {{ display:block; width:100%; border:0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); border-radius:0; padding:10px 12px; text-align:left; background:#fff; }}
+.search-result:hover {{ background:#f7fbff; }}
+.search-result b {{ display:block; color:#1f5f91; margin-bottom:2px; }}
+.search-result span {{ color:var(--muted); font-size:12px; }}
 .filter-banner {{ display:none; align-items:center; gap:10px; margin:-4px 0 12px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:#f7fbff; color:var(--muted); }}
 .filter-banner b {{ color:var(--ink); }}
 .inline-filter {{ display:none; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); background:#fff; color:var(--muted); }}
@@ -1142,15 +1150,14 @@ td.long, th.long {{ min-width:240px; }}
     <button data-tab="needby">到仓红线</button>
     <button data-tab="replenishment">补货建议</button>
     <button data-tab="transit">运输设置</button>
-    <button data-tab="workbook">上传 Follow Up</button>
-    <button data-tab="sps">导入 SPS</button>
     <button data-tab="export">导出</button>
     <button data-tab="checks">数据检查</button>
   </nav>
 </header>
 <main>
-  <input class="search" id="search" placeholder="筛选 SO / SKU / 客户 / PO / BOL">
+  <input class="search" id="search" placeholder="全局搜索 SO / SKU / PO / BOL / 客户仓">
   <div class="filter-banner" id="activeFilterBanner"><span id="activeFilterText"></span><button id="clearActiveFilter">清除筛选</button></div>
+  <section class="search-results" id="searchResults"></section>
   <section class="panel" id="importNotice" style="display:none"></section>
   <section class="detail" id="detail"></section>
   <div class="tab active" id="today">{today_tables}</div>
@@ -1169,39 +1176,6 @@ td.long, th.long {{ min-width:240px; }}
     {table("Replenishment Suggestion / 预测补货建议", data["replenishment"], [("status","状态"),("sku","SKU"),("product","产品"),("weekly_forecast","周预测"),("current_turnover_weeks","当前周转周数"),("lead_time_weeks","LT周数"),("safety_stock_weeks","安全库存周数"),("buffer_weeks","缓冲周数"),("target_weeks","目标周数"),("target_stock","目标库存"),("total_stock","Total Stock"),("formula_gap","公式缺口"),("case_pack","箱规"),("suggested_po_qty","建议下单量"),("sum_purchase_suggestion","Sum原建议"),("order_risk_gap","订单风险缺口"),("onhand","当前库存"),("open_demand","未交货需求"),("confirmed_incoming","确认在途"),("planned_incoming","预计在途"),("moq","MOQ"),("action","说明")], "主公式：MAX(0, Weekly Forecast × (LT + SS + 2) - Total Stock)，再按箱规向上取整。订单风险缺口只做参考，不参与建议采购量。")}
   </div>
   <div class="tab" id="transit"></div>
-  <div class="tab" id="workbook">
-    <section class="panel">
-      <div class="panel-title">
-        <h2>Follow Up Upload / 上传最新版 Follow Up</h2>
-        <p>Use this when order dates, purchase ETA, inventory, or sales lines changed. This requires opening the dashboard through the local server URL.</p>
-      </div>
-      <div class="toolbox">
-        <input type="file" id="followupFile" accept=".xlsx,.xlsm">
-        <button id="uploadFollowup">Upload and Recalculate</button>
-      </div>
-      <div id="followupUploadStatus" class="hint">如果这个页面是直接打开的文件，请先启动本地看板服务。</div>
-    </section>
-  </div>
-  <div class="tab" id="sps">
-    <section class="panel">
-      <div class="panel-title">
-        <h2>SPS Import / 导入 SPS 新订单</h2>
-        <p>Choose one or more SPS CSV files. If SPS gives you a zip, unzip it first and select the CSV files inside.</p>
-      </div>
-      <div class="toolbox">
-        <input type="file" id="spsFiles" multiple accept=".csv,.txt">
-        <button id="confirmSpsImport">Confirm Import Preview</button>
-        <button id="clearSps">Clear Import</button>
-        <button id="clearConfirmedImports">Clear Confirmed Imports</button>
-        <button id="downloadSpsDiff">Download SPS Difference CSV</button>
-        <button id="copySpsNew">Copy New Lines for Excel</button>
-        <button id="downloadSpsSalesXls">Download Sales Paste File</button>
-      </div>
-      <div id="spsSummary" class="detail-grid"></div>
-      <div id="spsRiskPreview"></div>
-      <div id="spsResults" class="hint">No SPS files imported yet.</div>
-    </section>
-  </div>
   <div class="tab" id="export">
     <section class="panel">
       <div class="panel-title">
@@ -1832,12 +1806,12 @@ function buildSkuCoverageLadder(view) {{
     const base = skuInfoFor(sku);
     const totalDemand = lines.reduce((sum, x) => sum + Number(x.qty || 0), 0);
     let cumulative = Number(base.current_onhand || 0);
-    rows.push({{status:cumulative >= totalDemand ? 'OK' : 'Lead Time Watch', sku, product:lines[0]?.product || base.product || '', step:'Current stock', eta:'', reliability:'Onhand', step_qty:cumulative, cumulative_supply:cumulative, total_demand:totalDemand, remaining_gap:cumulative-totalDemand, conclusion:cumulative >= totalDemand ? 'Current stock covers all demand.' : `Need ${{totalDemand-cumulative}} more units from incoming PO or add-on PO.`}});
+    rows.push({{status:cumulative >= totalDemand ? 'OK' : 'Lead Time Watch', sku, product:lines[0]?.product || base.product || '', step:'当前库存', po:'', bol:'', port_eta:'', eta:'', warehouse_ready_date:'', reliability:'现有库存', step_qty:cumulative, cumulative_supply:cumulative, total_demand:totalDemand, remaining_gap:cumulative-totalDemand, conclusion:cumulative >= totalDemand ? 'Current stock covers all demand.' : `Need ${{totalDemand-cumulative}} more units from incoming PO or add-on PO.`}});
     const pos = usableFuturePos(sku).map(x => ({{...x, qty:Number(x.qty || 0)}})).sort((a,b) => String(a.available || '9999-12-31').localeCompare(String(b.available || '9999-12-31')) || String(a.po).localeCompare(String(b.po)));
     for (const po of pos) {{
       cumulative += po.qty;
       const gap = cumulative - totalDemand;
-      rows.push({{status:gap >= 0 ? 'OK' : (isPlannedReliability(po.reliability) ? 'Planned PO Watch' : 'Lead Time Watch'), sku, product:lines[0]?.product || base.product || '', step:po.po || '(blank PO)', eta:po.available || '', reliability:po.reliability || '', step_qty:po.qty, cumulative_supply:cumulative, total_demand:totalDemand, remaining_gap:gap, conclusion:gap >= 0 ? '累计供应已覆盖全部未完成 SO 需求。' : `该 PO 到仓后仍缺 ${{Math.abs(gap)}} 件。`}});
+      rows.push({{status:gap >= 0 ? 'OK' : (isPlannedReliability(po.reliability) ? 'Planned PO Watch' : 'Lead Time Watch'), sku, product:lines[0]?.product || base.product || '', step:po.po || '(blank PO)', po:po.po || '', bol:po.bol || '', port_eta:po.port_eta || '', eta:po.available || '', warehouse_ready_date:warehouseReadyDate(po.available || ''), reliability:po.reliability || '', step_qty:po.qty, cumulative_supply:cumulative, total_demand:totalDemand, remaining_gap:gap, conclusion:gap >= 0 ? '累计供应已覆盖全部未完成 SO 需求。' : `该 PO 到仓后仍缺 ${{Math.abs(gap)}} 件。`}});
     }}
   }}
   return rows;
@@ -2102,7 +2076,7 @@ function renderDynamicViews() {{
   const auditPanel = simplePanel('人工分配检查', view.audit, [['status','状态'],['sku','SKU'],['product','产品'],['current_onhand','当前库存'],['manual_allocated','人工分配数量'],['remaining_stock','剩余库存'],['remaining_risk_qty','剩余风险数量'],['decision_rows','决策行数'],['possible_targets','可调整 SO'],['action','处理建议']], '显示人工分配后是否仍有剩余库存或风险。');
   document.getElementById('sku').innerHTML =
     simplePanel('SKU 缺货跟进', skuRows, [['status','状态'],['sku','SKU'],['product','产品'],['current_onhand','当前库存'],['open_demand','未交货需求'],['confirmed_incoming_qty','确认在途'],['planned_incoming_qty','预计在途'],['shortage_qty','缺口数量'],['issue_qty','风险数量'],['follow_po','跟进PO'],['follow_bol','跟进BOL'],['port_eta','ETD到港日'],['cover_eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['latest_wh_arrival','最晚美仓发货日'],['gap_days','差异天数'],['affected_so_count','影响SO数'],['affected_sos','影响SO'],['action','处理建议']], '库存、需求、在途、缺口，以及需要跟进的 PO/BOL。差异天数优先按“仓库备货后可发货日”计算。') +
-    simplePanel('SKU 覆盖阶梯', skuCoverageLadder, [['status','状态'],['sku','SKU'],['product','产品'],['step','库存/PO'],['eta','预计到仓'],['reliability','可靠性'],['step_qty','数量'],['cumulative_supply','累计供应'],['total_demand','未交货需求'],['remaining_gap','该节点后缺口'],['conclusion','结论']], '按 SKU 从上往下看：现有库存和每个 PO 到仓后，何时能完全覆盖未交货需求。') +
+    simplePanel('SKU 覆盖阶梯', skuCoverageLadder, [['status','状态'],['sku','SKU'],['product','产品'],['step','库存/PO'],['bol','BOL'],['port_eta','ETD到港日'],['eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['reliability','可靠性'],['step_qty','数量'],['cumulative_supply','累计供应'],['total_demand','未交货需求'],['remaining_gap','该节点后缺口'],['conclusion','结论']], '按 SKU 从上往下看：现有库存和每个 PO 到仓后，何时能完全覆盖未交货需求。') +
     auditPanel;
   const factoryCols = [['po','PO'],['urgent_skus','紧急SKU'],['urgent_sos','紧急SO'],['earliest_required_arrival','最早客户交期'],['latest_wh_ship','最晚美仓发货日'],['latest_wh_arrival','最晚到仓红线'],['latest_factory_ship','最晚工厂发货日'],['planned_factory_ship','计划工厂发货日'],['current_wh_eta','当前预计到仓日'],['gap_days','差异天数'],['affected_so_count','影响SO数'],['affected_sku_count','影响SKU数'],['qty','数量'],['action','处理建议']];
   const inboundCols = [['status','状态'],['bol','BOL'],['related_pos','相关PO'],['sku_count','SKU数'],['qty','数量'],['sailing_date','船期'],['port_eta','ETD到港日'],['port_atd','实际到港日'],['planned_wh_eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['earliest_so','最早影响SO'],['earliest_latest_ship','最早SO最晚发货日'],['days_margin','备货后余量'],['action','处理建议']];
@@ -2290,6 +2264,7 @@ function showDetail(kind, value) {{
     if (!sku) return;
     const confirmedRows = confirmedSpsAsSalesLines().filter(x => x.sku === value);
     const spsRows = lastSpsRiskPreview.filter(x => x.sku === value);
+    const coverageLadder = buildSkuCoverageLadder(view).filter(x => x.sku === value);
     const spsDemand = confirmedRows.length ? confirmedRows.reduce((sum, x) => sum + Number(x.qty || 0), 0) : spsRows.reduce((sum, x) => sum + Number(x.qty || 0), 0);
     const spsExplainRows = confirmedRows.length ? confirmedRows.map(x => ({{status:'Confirmed', order:x.so, qty:x.qty, etd:x.required_arrival, required_arrival:x.required_arrival, latest_ship:x.latest_ship, cover:'Included in local dashboard', uncovered:'', why:`当前库存 ${{sku.current_onhand}} - 已有需求 ${{sku.open_demand}} - 已确认 SPS 需求 ${{spsDemand}} = ${{Number(sku.current_onhand || 0) - Number(sku.open_demand || 0) - spsDemand}}`}})) : spsRows;
     const spsExplain = spsExplainRows.length ? `<section class="panel"><div class="panel-title"><h2>SPS 新单影响</h2><p>该 SKU 已确认/已导入的 SPS 行。</p></div><div class="detail-grid">${{mini('当前库存', sku.current_onhand)}}${{mini('已有需求', sku.open_demand)}}${{mini('SPS需求', spsDemand)}}${{mini('导入后缺口', Number(sku.current_onhand || 0) - Number(sku.open_demand || 0) - spsDemand)}}</div>${{simpleTable(spsExplainRows, [['status','状态'],['order','SO/PO'],['qty','数量'],['etd','ETD'],['latest_ship','最晚美仓发货日'],['required_arrival','客户要求到仓日'],['cover','覆盖来源'],['uncovered','未覆盖数量'],['why','说明']])}}</section>` : '';
@@ -2297,6 +2272,7 @@ function showDetail(kind, value) {{
       <div class="detail-grid">${{mini('当前库存', sku.current_onhand)}}${{mini('未交货需求', sku.open_demand)}}${{mini('库存缺口', sku.stock_gap)}}${{mini('风险数量', sku.issue_qty)}}${{mini('高风险数量', sku.critical_qty)}}${{mini('观察数量', sku.watch_qty)}}${{mini('未来PO数量', sku.future_qty)}}${{mini('未覆盖数量', sku.uncovered_qty)}}</div>
       <div class="detail-body">${{rec.length ? simpleTable(rec, [['sku','SKU'],['stock_gap','库存缺口'],['issue_qty','风险数量'],['standard_affected_so','自然影响SO'],['recommended_so','建议承担SO'],['recommendation','建议'],['recommended_reason','原因']]) : ''}}
       ${{spsExplain}}
+      <section class="panel"><div class="panel-title"><h2>SKU 覆盖阶梯</h2><p>按可用时间依次展示当前库存和每张 PO：可判断哪一张 PO 后才能覆盖全部需求，以及到仓后是否还需要给仓库留出备货时间。</p></div>${{simpleTable(coverageLadder, [['status','状态'],['step','库存/PO'],['bol','BOL'],['port_eta','ETD到港日'],['eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['reliability','可靠性'],['step_qty','数量'],['cumulative_supply','累计供应'],['total_demand','未交货需求'],['remaining_gap','该节点后缺口'],['conclusion','结论']])}}</section>
       ${{allocationTable(value, lines)}}
       ${{simpleTable(lines, [['status','状态'],['so','SO/CI'],['customer','客户'],['delivery_center','客户仓'],['qty','数量'],['risk_qty','风险数量'],['allocation_issue_skus','SO问题SKU数'],['allocation_critical_skus','SO高风险SKU数'],['latest_ship','最晚美仓发货日'],['required_arrival','客户要求到仓日'],['cover','覆盖来源'],['action','处理建议']])}}</div>`;
   }}
@@ -2355,6 +2331,84 @@ function applyGlobalFilter() {{
     tr.style.display = !q || tr.innerText.toLowerCase().includes(q) ? '' : 'none';
   }});
   updateFilterBanner();
+}}
+function globalSearchResults() {{
+  const q = String(document.getElementById('search')?.value || '').trim().toLowerCase();
+  const panel = document.getElementById('searchResults');
+  if (!panel) return;
+  if (!q) {{
+    panel.classList.remove('active');
+    panel.innerHTML = '';
+    return;
+  }}
+  const view = currentViewData();
+  const results = [];
+  const seen = new Set();
+  const matches = (...values) => values.some(v => String(v ?? '').toLowerCase().includes(q));
+  const add = (kind, value, title, description) => {{
+    const key = `${{kind}}__${{value}}`;
+    if (!value || seen.has(key)) return;
+    seen.add(key);
+    results.push({{kind, value:String(value), title, description}});
+  }};
+  for (const so of view.soBoard) {{
+    if (matches(so.so, so.customer, so.delivery_center, so.status)) add('so', so.so, `SO ${{so.so}}`, `${{so.customer || ''}} · ${{so.delivery_center || ''}} · ${{zhStatus(so.status)}}`);
+  }}
+  const skuRows = buildSkuShortageRows(view);
+  for (const sku of skuRows) {{
+    if (matches(sku.sku, sku.product, sku.follow_po, sku.follow_bol, sku.affected_sos)) add('sku', sku.sku, `SKU ${{sku.sku}}`, `${{sku.product || ''}} · 缺口 ${{sku.shortage_qty || 0}} · 风险 ${{sku.issue_qty || 0}}`);
+  }}
+  const poRows = new Map();
+  const bolRows = new Map();
+  for (const line of view.lines) {{
+    for (const cover of (line.cover_details || [])) {{
+      if (cover.po) {{
+        const current = poRows.get(cover.po) || {{skus:new Set(), sos:new Set(), bol:''}};
+        current.skus.add(line.sku);
+        current.sos.add(line.so);
+        if (!current.bol && cover.bol) current.bol = cover.bol;
+        poRows.set(cover.po, current);
+      }}
+      if (cover.bol) {{
+        const current = bolRows.get(cover.bol) || {{pos:new Set(), skus:new Set(), sos:new Set(), eta:''}};
+        if (cover.po) current.pos.add(cover.po);
+        current.skus.add(line.sku);
+        current.sos.add(line.so);
+        if (!current.eta && cover.available) current.eta = cover.available;
+        bolRows.set(cover.bol, current);
+      }}
+    }}
+  }}
+  for (const [po, row] of poRows) {{
+    if (matches(po, row.bol, [...row.skus].join(' '), [...row.sos].join(' '))) add('po', po, `PO ${{po}}`, `关联 SKU ${{row.skus.size}} 个 · 关联 SO ${{row.sos.size}} 个${{row.bol ? ` · BOL ${{row.bol}}` : ''}}`);
+  }}
+  for (const [bol, row] of bolRows) {{
+    if (matches(bol, [...row.pos].join(' '), [...row.skus].join(' '), [...row.sos].join(' '))) add('bol', bol, `BOL ${{bol}}`, `关联 PO ${{[...row.pos].join('、')}} · SKU ${{row.skus.size}} 个 · SO ${{row.sos.size}} 个${{row.eta ? ` · 预计到仓 ${{row.eta}}` : ''}}`);
+  }}
+  const shown = results.slice(0, 36);
+  panel.classList.toggle('active', shown.length > 0);
+  panel.innerHTML = shown.length
+    ? `<div class="search-result-head">全局搜索结果：${{shown.length}} 项${{results.length > shown.length ? '（仅显示前 36 项）' : ''}}。点击可直接查看关联详情。</div><div class="search-result-list">${{shown.map(x => `<button class="search-result" data-search-kind="${{esc(x.kind)}}" data-search-value="${{esc(x.value)}}"><b>${{esc(x.title)}}</b><span>${{esc(x.description)}}</span></button>`).join('')}}</div>`
+    : `<div class="search-result-head">没有找到与“${{esc(q)}}”相关的 SO、SKU、PO 或 BOL。</div>`;
+}}
+function openGlobalSearchResult(kind, value) {{
+  if (kind === 'so' || kind === 'sku') {{
+    showDetail(kind, value);
+    return;
+  }}
+  if (kind === 'bol') {{
+    filterAndFocusBol(value);
+    return;
+  }}
+  if (kind === 'po') {{
+    const po = window.SCM_DATA.po_impact?.find(x => x.po === value);
+    if (po) {{
+      showDetail('po', value);
+      return;
+    }}
+    document.querySelector('button[data-tab="logistics"]')?.click();
+    document.getElementById('logistics')?.scrollIntoView({{behavior:'smooth', block:'start'}});
+  }}
 }}
 function csvEscape(v) {{
   if (Array.isArray(v)) v = v.map(x => typeof x === 'object' ? (x.sku || x.so || x.po || '') : x).filter(Boolean).join('; ');
@@ -3046,8 +3100,6 @@ function renderImportNotice() {{
   const panel = document.getElementById('importNotice');
   if (!panel) return;
   panel.style.display = 'none';
-  const spsTab = document.getElementById('spsResults');
-  if (!spsTab) return;
   if (!imports.length) return;
   const rows = imports.flatMap(x => x.new_rows || []);
   const pendingRows = pendingConfirmedSpsRows();
@@ -3057,14 +3109,8 @@ function renderImportNotice() {{
     <div class="detail-grid">${{mini('确认行数', rows.length)}}${{mini('待回填', pendingRows.length)}}${{mini('已在 Follow Up', postedRows.length)}}${{mini('是否需导出', pendingRows.length ? '是' : '否')}}</div>
     ${{simpleTable(pendingRows, [['issue','问题'],['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量'],['source_file','文件']])}}
     ${{postedRows.length ? simplePanel('已回填到 Follow Up，不再重复计算', postedRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量']], '这些已确认 SPS 行仅保留历史记录，不再参与需求计算和导出。') : ''}}</section>`;
-  if (!document.getElementById('confirmedSpsLines')) {{
-    const wrap = document.createElement('div');
-    wrap.id = 'confirmedSpsLines';
-    wrap.innerHTML = confirmedHtml;
-    spsTab.parentElement?.insertBefore(wrap, spsTab);
-  }} else {{
-    document.getElementById('confirmedSpsLines').innerHTML = confirmedHtml;
-  }}
+  panel.style.display = 'block';
+  panel.innerHTML = confirmedHtml;
 }}
 async function loadSpsFiles(files) {{
   const all = [];
@@ -3091,12 +3137,14 @@ async function loadSpsFiles(files) {{
 document.getElementById('search').addEventListener('input', (e) => {{
   activeFilter = null;
   applyGlobalFilter();
+  globalSearchResults();
 }});
 document.getElementById('clearActiveFilter')?.addEventListener('click', () => {{
   activeFilter = null;
   const search = document.getElementById('search');
   if (search) search.value = '';
   applyGlobalFilter();
+  globalSearchResults();
 }});
 document.addEventListener('click', (e) => {{
   const btn = e.target.closest('#clearBolInlineFilter');
@@ -3105,6 +3153,7 @@ document.addEventListener('click', (e) => {{
   const search = document.getElementById('search');
   if (search) search.value = '';
   applyGlobalFilter();
+  globalSearchResults();
   document.getElementById('bolSummary')?.scrollIntoView({{behavior:'smooth', block:'start'}});
 }});
 document.addEventListener('input', (e) => {{
@@ -3302,6 +3351,11 @@ document.getElementById('downloadAllocations')?.addEventListener('click', () => 
 renderImportNotice();
 renderDynamicViews();
 document.addEventListener('click', (e) => {{
+  const searchResult = e.target.closest('button.search-result');
+  if (searchResult) {{
+    openGlobalSearchResult(searchResult.dataset.searchKind, searchResult.dataset.searchValue);
+    return;
+  }}
   const btn = e.target.closest('button.link');
   if (!btn) return;
   if (btn.dataset.kind === 'bol') {{
