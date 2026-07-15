@@ -4,8 +4,12 @@ import os
 import csv
 import io
 import json
+import base64
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +30,7 @@ SHARED_STATE_PATH = DATA_DIR / "shared_state.json"
 UPLOAD_HISTORY_PATH = DATA_DIR / "upload_history.json"
 OPERATION_LOG_PATH = DATA_DIR / "operation_log.json"
 BACKUP_MANIFEST = "scm_dashboard_backup_manifest.json"
+CLOUD_WORKBOOK_NAME = "cloud_current_follow_up.xlsx"
 
 
 st.set_page_config(page_title="SCM 看板", layout="wide")
@@ -54,6 +59,9 @@ def check_password() -> bool:
 
 
 def latest_upload() -> Path | None:
+    cloud_copy = UPLOAD_DIR / CLOUD_WORKBOOK_NAME
+    if cloud_copy.exists():
+        return cloud_copy
     if not UPLOAD_DIR.exists():
         return None
     files = sorted(UPLOAD_DIR.glob("*.xls*"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -82,13 +90,220 @@ def save_json_file(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def cloud_config() -> dict:
+    """Read optional GitHub storage settings without ever exposing the token."""
+    token = str(st.secrets.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")).strip()
+    repository = str(
+        st.secrets.get("GITHUB_REPOSITORY", "")
+        or os.environ.get("GITHUB_REPOSITORY", "nicolechu111111-lgtm/scm-risk-dashboard")
+    ).strip()
+    branch = str(st.secrets.get("GITHUB_BRANCH", "") or os.environ.get("GITHUB_BRANCH", "main")).strip()
+    state_path = str(st.secrets.get("GITHUB_STATE_PATH", "") or os.environ.get("GITHUB_STATE_PATH", "data/scm_shared_state.json")).strip()
+    workbook_path = str(st.secrets.get("GITHUB_WORKBOOK_PATH", "") or os.environ.get("GITHUB_WORKBOOK_PATH", "data/current_follow_up.xlsx")).strip()
+    return {
+        "enabled": bool(token and repository),
+        "token": token,
+        "repository": repository,
+        "branch": branch or "main",
+        "state_path": state_path,
+        "workbook_path": workbook_path,
+    }
+
+
+def github_contents(path: str, method: str = "GET", payload: dict | None = None) -> tuple[int, dict]:
+    """Small GitHub Contents API wrapper used only for the app's private shared data."""
+    config = cloud_config()
+    if not config["enabled"]:
+        return 0, {}
+    url = f"https://api.github.com/repos/{config['repository']}/contents/{path}"
+    if method == "GET":
+        url += f"?ref={config['branch']}"
+        body = None
+    else:
+        body = json.dumps(payload or {}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {config['token']}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "scm-risk-dashboard",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="ignore")
+        try:
+            return exc.code, json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return exc.code, {"message": raw}
+    except Exception as exc:
+        return -1, {"message": str(exc)}
+
+
+def github_read_bytes(path: str) -> tuple[bytes | None, str | None]:
+    status, response = github_contents(path)
+    if status == 404:
+        return None, None
+    if status != 200:
+        return None, str(response.get("message", "无法读取 GitHub 共享数据。"))
+    try:
+        return base64.b64decode(str(response.get("content", "")).replace("\n", "")), None
+    except Exception:
+        return None, "GitHub 共享数据格式无效。"
+
+
+def github_write_bytes(path: str, content: bytes, message: str) -> tuple[bool, str]:
+    """Write with the current SHA so concurrent edits never silently overwrite each other."""
+    config = cloud_config()
+    if not config["enabled"]:
+        return False, "尚未配置 GitHub 共享存储。"
+    for _ in range(2):
+        status, current = github_contents(path)
+        if status not in (200, 404):
+            return False, str(current.get("message", "无法读取 GitHub 共享文件。"))
+        payload = {
+            "message": message,
+            "branch": config["branch"],
+            "content": base64.b64encode(content).decode("ascii"),
+        }
+        if status == 200 and current.get("sha"):
+            payload["sha"] = current["sha"]
+        write_status, response = github_contents(path, "PUT", payload)
+        if write_status in (200, 201):
+            return True, ""
+        if write_status in (409, 422):
+            time.sleep(0.4)
+            continue
+        return False, str(response.get("message", "无法写入 GitHub 共享文件。"))
+    return False, "多人同时修改，保存冲突；请刷新页面后再试。"
+
+
+def cloud_document_defaults() -> dict:
+    return {
+        "version": 1,
+        "email_sent": {},
+        "shared_state": default_shared_state(),
+        "upload_history": [],
+        "operation_log": [],
+    }
+
+
+def load_cloud_document() -> dict:
+    config = cloud_config()
+    if not config["enabled"]:
+        return cloud_document_defaults()
+    raw, error = github_read_bytes(config["state_path"])
+    if error or raw is None:
+        return cloud_document_defaults()
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except Exception:
+        document = {}
+    defaults = cloud_document_defaults()
+    if not isinstance(document, dict):
+        document = {}
+    for key, value in defaults.items():
+        document.setdefault(key, value)
+    return document
+
+
+def save_cloud_section(section: str, value, message: str) -> None:
+    """Merge one section against the latest remote document before writing it back."""
+    config = cloud_config()
+    if not config["enabled"]:
+        return
+    document = load_cloud_document()
+    document[section] = value
+    ok, error = github_write_bytes(
+        config["state_path"],
+        json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8"),
+        message,
+    )
+    if not ok:
+        raise RuntimeError(f"共享保存失败：{error}")
+
+
+def sync_cloud_runtime() -> str | None:
+    """Hydrate Streamlit's temporary disk from durable GitHub storage on every load."""
+    config = cloud_config()
+    if not config["enabled"]:
+        return None
+    raw_document, state_error = github_read_bytes(config["state_path"])
+    if state_error:
+        return f"无法同步云端共享记录：{state_error}"
+    if raw_document is None:
+        # First enablement: keep the work already entered in this running app.
+        document = cloud_document_defaults()
+        document["email_sent"] = load_json_file(EMAIL_SENT_PATH, {})
+        document["shared_state"] = load_json_file(SHARED_STATE_PATH, default_shared_state())
+        document["upload_history"] = load_json_file(UPLOAD_HISTORY_PATH, [])
+        document["operation_log"] = load_json_file(OPERATION_LOG_PATH, [])
+        ok, error = github_write_bytes(
+            config["state_path"],
+            json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8"),
+            "初始化 SCM 团队共享记录",
+        )
+        if not ok:
+            return f"无法初始化云端共享记录：{error}"
+    else:
+        try:
+            document = json.loads(raw_document.decode("utf-8"))
+        except Exception:
+            return "云端共享记录格式无效，请联系管理员检查 data/scm_shared_state.json。"
+        if not isinstance(document, dict):
+            return "云端共享记录格式无效，请联系管理员检查 data/scm_shared_state.json。"
+    save_json_file(EMAIL_SENT_PATH, document.get("email_sent", {}))
+    save_json_file(SHARED_STATE_PATH, document.get("shared_state", default_shared_state()))
+    save_json_file(UPLOAD_HISTORY_PATH, document.get("upload_history", []))
+    save_json_file(OPERATION_LOG_PATH, document.get("operation_log", []))
+    workbook, error = github_read_bytes(config["workbook_path"])
+    if error:
+        return f"无法同步云端 Follow Up：{error}"
+    if workbook:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        (UPLOAD_DIR / CLOUD_WORKBOOK_NAME).write_bytes(workbook)
+    else:
+        current = latest_upload()
+        if current:
+            try:
+                save_cloud_workbook(current)
+            except RuntimeError as exc:
+                return str(exc)
+    return None
+
+
+def save_cloud_workbook(workbook: Path) -> None:
+    """Keep the latest Follow Up workbook available after a Streamlit restart."""
+    config = cloud_config()
+    if not config["enabled"]:
+        return
+    size_mb = workbook.stat().st_size / (1024 * 1024)
+    if size_mb > 90:
+        raise RuntimeError("Follow Up 文件超过 90MB，不能保存到 GitHub 共享存储。")
+    ok, error = github_write_bytes(config["workbook_path"], workbook.read_bytes(), "更新当前 Follow Up 数据")
+    if not ok:
+        raise RuntimeError(f"Follow Up 云端保存失败：{error}")
+
+
 def load_email_sent() -> dict:
+    if cloud_config()["enabled"]:
+        data = load_cloud_document().get("email_sent", {})
+        save_json_file(EMAIL_SENT_PATH, data)
+        return data if isinstance(data, dict) else {}
     data = load_json_file(EMAIL_SENT_PATH, {})
     return data if isinstance(data, dict) else {}
 
 
 def save_email_sent(data: dict) -> None:
     save_json_file(EMAIL_SENT_PATH, data)
+    save_cloud_section("email_sent", data, "更新仓库邮件发送记录")
 
 
 def default_shared_state() -> dict:
@@ -96,7 +311,11 @@ def default_shared_state() -> dict:
 
 
 def load_shared_state() -> dict:
-    data = load_json_file(SHARED_STATE_PATH, default_shared_state())
+    if cloud_config()["enabled"]:
+        data = load_cloud_document().get("shared_state", default_shared_state())
+        save_json_file(SHARED_STATE_PATH, data)
+    else:
+        data = load_json_file(SHARED_STATE_PATH, default_shared_state())
     if not isinstance(data, dict):
         data = default_shared_state()
     data.setdefault("manual_allocations", {})
@@ -115,22 +334,31 @@ def load_shared_state() -> dict:
 
 def save_shared_state(data: dict) -> None:
     save_json_file(SHARED_STATE_PATH, data)
+    save_cloud_section("shared_state", data, "更新团队共享设置")
 
 
 def append_log(action: str, detail: str = "") -> None:
-    rows = load_json_file(OPERATION_LOG_PATH, [])
+    if cloud_config()["enabled"]:
+        rows = load_cloud_document().get("operation_log", [])
+    else:
+        rows = load_json_file(OPERATION_LOG_PATH, [])
     if not isinstance(rows, list):
         rows = []
     rows.insert(0, {"time": datetime.now().isoformat(timespec="seconds"), "action": action, "detail": detail})
     save_json_file(OPERATION_LOG_PATH, rows[:300])
+    save_cloud_section("operation_log", rows[:300], "新增看板操作日志")
 
 
 def append_upload_history(filename: str) -> None:
-    rows = load_json_file(UPLOAD_HISTORY_PATH, [])
+    if cloud_config()["enabled"]:
+        rows = load_cloud_document().get("upload_history", [])
+    else:
+        rows = load_json_file(UPLOAD_HISTORY_PATH, [])
     if not isinstance(rows, list):
         rows = []
     rows.insert(0, {"time": datetime.now().isoformat(timespec="seconds"), "file": filename})
     save_json_file(UPLOAD_HISTORY_PATH, rows[:80])
+    save_cloud_section("upload_history", rows[:80], "更新 Follow Up 上传记录")
 
 
 def backup_bytes() -> bytes | None:
@@ -738,6 +966,10 @@ def render_history_and_logs() -> None:
 if not check_password():
     st.stop()
 
+cloud_sync_error = sync_cloud_runtime()
+if cloud_sync_error:
+    st.warning(cloud_sync_error)
+
 st.title("SCM Risk Dashboard / 供应链风险看板")
 
 with st.sidebar:
@@ -750,19 +982,30 @@ with st.sidebar:
         safe_name = Path(uploaded.name).name.replace("/", "_")
         target = UPLOAD_DIR / f"{stamp}_{safe_name}"
         target.write_bytes(uploaded.getbuffer())
-        ok, message = recalculate(target)
-        if ok:
-            append_upload_history(target.name)
-            append_log("上传 Follow Up", target.name)
-            st.success(message)
-            st.rerun()
-        else:
-            st.error(message)
+        try:
+            save_cloud_workbook(target)
+            cloud_target = UPLOAD_DIR / CLOUD_WORKBOOK_NAME
+            if cloud_config()["enabled"]:
+                cloud_target.write_bytes(target.read_bytes())
+                target = cloud_target
+            ok, message = recalculate(target)
+            if ok:
+                append_upload_history(Path(uploaded.name).name)
+                append_log("上传 Follow Up", Path(uploaded.name).name)
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+        except RuntimeError as exc:
+            st.error(str(exc))
 
     current = latest_upload()
     if current:
         st.caption(f"当前文件：{current.name}")
-    st.caption("免费部署版本的文件保存在应用运行环境内；如果平台休眠或重建，可能需要重新上传。")
+    if cloud_config()["enabled"]:
+        st.caption("团队共享状态与当前 Follow Up 已保存到私有云端；刷新、换电脑或应用重启后会自动同步。")
+    else:
+        st.warning("尚未完成云端共享配置。应用重启后，已发送记录和当前 Follow Up 可能丢失。")
 
 if not live_html().exists() or not live_json().exists():
     current = latest_upload()
