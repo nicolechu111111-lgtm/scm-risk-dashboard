@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "email_sent": {},
+  "shared_state": {
+    "manual_allocations": {},
+    "transit_settings": {
+      "stateDays": {},
+      "dcDays": {}
+    },
+    "confirmed_sps_imports": []
+  },
+  "upload_history": [
+    {
+      "time": "2026-07-15T06:04:17",
+      "file": "20260715_060416_SCM Follow Up (3).xlsx"
+    }
+  ],
+  "operation_log": [
+    {
+      "time": "2026-07-15T06:04:17",
+      "action": "上传 Follow Up",
+      "detail": "20260715_060416_SCM Follow Up (3).xlsx"
+    }
+  ]
+}
