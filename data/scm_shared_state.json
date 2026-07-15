@@ -1,6 +1,11 @@
 {
   "version": 1,
-  "email_sent": {},
+  "email_sent": {
+    "0020P50139841": {
+      "so": "0020P50139841",
+      "sent_at": "2026-07-15T08:16:51"
+    }
+  },
   "shared_state": {
     "manual_allocations": {},
     "transit_settings": {
