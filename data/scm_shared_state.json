@@ -110,6 +110,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-07-21T05:47:20",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up.xlsx"
+    },
+    {
       "time": "2026-07-20T05:19:38",
       "action": "上传 Follow Up",
       "detail": "SCM Follow Up (7).xlsx"
