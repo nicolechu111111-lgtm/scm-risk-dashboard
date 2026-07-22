@@ -122,6 +122,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-07-22T08:27:42",
+      "action": "仓库邮件标记已发送",
+      "detail": "31577970"
+    },
+    {
       "time": "2026-07-22T02:56:40",
       "action": "上传 Follow Up",
       "detail": "SCM Follow Up.xlsx"
