@@ -906,7 +906,18 @@ def render_shared_sps_controls(data: dict) -> None:
         upc_issues = [x for x in diff if x.get("upc_status") and x.get("upc_status") != "OK"]
         pack_issues = [x for x in diff if x.get("case_pack_status") and x.get("case_pack_status") != "OK"]
         st.sidebar.write(f"SPS 新增：{len(new_rows)}")
-        st.sidebar.write(f"UPC 异常：{len(upc_issues)} / 箱规异常：{len(pack_issues)}")
+        if upc_issues or pack_issues:
+            st.sidebar.error(f"导入前强提醒：UPC 异常 {len(upc_issues)} 条，箱规异常 {len(pack_issues)} 条。请核对后再确认导入。")
+            issue_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "sps_qty", "sps_upc", "expected_upc", "upc_status", "case_pack", "case_pack_remainder", "case_pack_status", "source_file"]
+            issue_rows = [
+                {key: row.get(key, "") for key in issue_cols}
+                for row in diff
+                if row.get("upc_status") not in {"", "OK", None} or row.get("case_pack_status") not in {"", "OK", None}
+            ]
+            with st.sidebar.expander(f"查看全部异常明细 ({len(issue_rows)})", expanded=True):
+                st.dataframe(issue_rows, use_container_width=True, hide_index=True)
+        else:
+            st.sidebar.success("UPC 与箱规检查通过，可确认导入。")
         with st.sidebar.expander("预览前 20 行", expanded=False):
             preview_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "sps_qty", "upc_status", "case_pack_status"]
             st.dataframe([{k: row.get(k, "") for k in preview_cols} for row in diff[:20]], use_container_width=True, hide_index=True)

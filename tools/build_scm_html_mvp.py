@@ -3246,10 +3246,12 @@ function renderImportNotice() {{
   const pendingRows = pendingConfirmedSpsRows();
   const postedRows = postedConfirmedSpsRows();
   const latest = imports[imports.length - 1];
-  const confirmedHtml = `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。待回填行已纳入本地计算；已在 Follow Up 找到的行会排除，避免需求重复。</p></div>
-    <div class="detail-grid">${{mini('确认行数', rows.length)}}${{mini('待回填', pendingRows.length)}}${{mini('已在 Follow Up', postedRows.length)}}${{mini('是否需导出', pendingRows.length ? '是' : '否')}}</div>
-    ${{simpleTable(pendingRows, [['issue','问题'],['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量'],['source_file','文件']])}}
-    ${{postedRows.length ? simplePanel('已回填到 Follow Up，不再重复计算', postedRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量']], '这些已确认 SPS 行仅保留历史记录，不再参与需求计算和导出。') : ''}}</section>`;
+  const confirmedHtml = pendingRows.length
+    ? `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。待回填行已纳入本地计算；已在 Follow Up 找到的行会排除，避免需求重复。</p></div>
+        <div class="detail-grid">${{mini('确认行数', rows.length)}}${{mini('待回填', pendingRows.length)}}${{mini('已在 Follow Up', postedRows.length)}}${{mini('是否需导出', '是')}}</div>
+        ${{simpleTable(pendingRows, [['issue','问题'],['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量'],['source_file','文件']])}}</section>`
+    : `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。${{postedRows.length}} 条已全部回填到 Follow Up，不再参与重复计算或导出。</p></div>
+        <details><summary>查看已回填历史（${{postedRows.length}} 条）</summary>${{simpleTable(postedRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量']])}}</details></section>`;
   panel.style.display = 'block';
   panel.innerHTML = confirmedHtml;
 }}
