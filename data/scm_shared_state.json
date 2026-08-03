@@ -174,109 +174,6 @@
     },
     "confirmed_sps_imports": [
       {
-        "confirmed_at": "2026-08-03T01:48:13",
-        "diff": [
-          {
-            "issue": "New in SPS",
-            "upc_status": "OK",
-            "case_pack_status": "OK",
-            "order": "0020PM0030700",
-            "raw_sku": "50126578",
-            "sku": "CPWJ87000",
-            "product": "MINI/MOE IVY BURROWING BOX",
-            "customer": "",
-            "dc": "",
-            "order_date": "",
-            "etd": "",
-            "ship_date": "",
-            "sps_qty": 120,
-            "unit_price": 14.89,
-            "followup_qty": 0,
-            "qty_diff": 120.0,
-            "sps_upc": "850030338051",
-            "expected_upc": "850030338051",
-            "case_pack": 4,
-            "case_pack_remainder": 0,
-            "source_file": "po0020PM0030700_0020PM00307001_392909.csv"
-          },
-          {
-            "issue": "New in SPS",
-            "upc_status": "OK",
-            "case_pack_status": "OK",
-            "order": "0020PM0030700",
-            "raw_sku": "50130111",
-            "sku": "ZM005-PL",
-            "product": "MINI/MOE SMALL ANIMAL BEDDING NESTING COTTON BALLS LAV 23LT",
-            "customer": "",
-            "dc": "",
-            "order_date": "",
-            "etd": "",
-            "ship_date": "",
-            "sps_qty": 384,
-            "unit_price": 3.26,
-            "followup_qty": 0,
-            "qty_diff": 384.0,
-            "sps_upc": "698746777531",
-            "expected_upc": "698746777531",
-            "case_pack": 32,
-            "case_pack_remainder": 0,
-            "source_file": "po0020PM0030700_0020PM00307001_392909.csv"
-          }
-        ],
-        "new_rows": [
-          {
-            "issue": "New in SPS",
-            "upc_status": "OK",
-            "case_pack_status": "OK",
-            "order": "0020PM0030700",
-            "raw_sku": "50126578",
-            "sku": "CPWJ87000",
-            "product": "MINI/MOE IVY BURROWING BOX",
-            "customer": "",
-            "dc": "",
-            "order_date": "",
-            "etd": "",
-            "ship_date": "",
-            "sps_qty": 120,
-            "unit_price": 14.89,
-            "followup_qty": 0,
-            "qty_diff": 120.0,
-            "sps_upc": "850030338051",
-            "expected_upc": "850030338051",
-            "case_pack": 4,
-            "case_pack_remainder": 0,
-            "source_file": "po0020PM0030700_0020PM00307001_392909.csv"
-          },
-          {
-            "issue": "New in SPS",
-            "upc_status": "OK",
-            "case_pack_status": "OK",
-            "order": "0020PM0030700",
-            "raw_sku": "50130111",
-            "sku": "ZM005-PL",
-            "product": "MINI/MOE SMALL ANIMAL BEDDING NESTING COTTON BALLS LAV 23LT",
-            "customer": "",
-            "dc": "",
-            "order_date": "",
-            "etd": "",
-            "ship_date": "",
-            "sps_qty": 384,
-            "unit_price": 3.26,
-            "followup_qty": 0,
-            "qty_diff": 384.0,
-            "sps_upc": "698746777531",
-            "expected_upc": "698746777531",
-            "case_pack": 32,
-            "case_pack_remainder": 0,
-            "source_file": "po0020PM0030700_0020PM00307001_392909.csv"
-          }
-        ],
-        "risk": [],
-        "source_files": [
-          "po0020PM0030700_0020PM00307001_392909.csv"
-        ]
-      },
-      {
         "confirmed_at": "2026-07-28T05:17:15",
         "diff": [
           {
@@ -2712,6 +2609,11 @@
     }
   ],
   "operation_log": [
+    {
+      "time": "2026-08-03T01:48:15",
+      "action": "确认导入 SPS 新单",
+      "detail": "2 行 / po0020PM0030700_0020PM00307001_392909.csv"
+    },
     {
       "time": "2026-07-30T05:59:47",
       "action": "上传 Follow Up",
