@@ -460,6 +460,7 @@ def main():
     sales_lines = []
     old_open_lines = []
     excluded_sales_lines = []
+    delivered_sales_lines = []
     shipped_new_by_sku = defaultdict(float)
     sales_order_date_col = col(sales_cols, "Date", default=0)
     sales_sku_col = col(sales_cols, "Product Code", default=2)
@@ -502,6 +503,19 @@ def main():
             shipped_new_by_sku[sku] += qty
 
         if delivered_at:
+            delivered_sales_lines.append(
+                {
+                    "row": i,
+                    "so": so,
+                    "sku": sku,
+                    "qty": int(qty),
+                    "customer": customer,
+                    "delivery_center": dc,
+                    "required_arrival": fdate(required_arrival),
+                    "actual_delivery_date": fdate(delivered_at),
+                    "status": "已送达，已从未完成订单和风险计算中排除",
+                }
+            )
             continue
 
         if not order_date or order_date <= base_date:
@@ -1059,6 +1073,11 @@ def main():
             "old_open_lines": old_open_lines[:200],
             "purchase_without_usable_eta": [x for x in purchase_rows if x["reliability"] in {"未发货-需确认工厂交期", "无可用到仓日期"} and x["qty"] > 0][:200],
             "received_po_excluded": arrived_po_rows[:200],
+            "delivered_sales_excluded": sorted(
+                delivered_sales_lines,
+                key=lambda x: (x["actual_delivery_date"], x["row"]),
+                reverse=True,
+            )[:200],
             "po_receipt_inconsistency": [
                 {
                     "issue": "DATA INCONSISTENCY",
@@ -1298,6 +1317,7 @@ td.long, th.long {{ min-width:240px; }}
   <div class="tab" id="checks">
     {table("DATA INCONSISTENCY / 数据不一致", data["data_checks"]["po_receipt_inconsistency"], [("issue","问题"),("po","PO"),("sku","SKU"),("qty","数量"),("actual_receipt_date","实际到货日期"),("available","预计到仓日"),("action","处理建议")], "如果已到货 PO 仍然进入未来在途，这里会强提醒。")}
     {table("已到货 PO 排除记录", data["data_checks"]["received_po_excluded"], [("row","Purchase 行"),("po","PO"),("sku","SKU"),("product","产品"),("qty","数量"),("actual_receipt_date","实际到货日期"),("sailing_date","船期"),("port_eta","到港日"),("bol","BOL"),("status","状态")], "这些 PO 已按 Sum Onhand 体现，不再计入确认在途/预计在途。")}
+    {table("已送达 SO 排除记录", data["data_checks"]["delivered_sales_excluded"], [("row","Sales 行"),("so","SO/CI"),("sku","SKU"),("qty","数量"),("customer","客户"),("delivery_center","客户仓"),("required_arrival","客户要求到仓日"),("actual_delivery_date","实际送达日"),("status","状态")], "Sales 的 ATD 有日期时，订单已送达，不参与未完成订单、库存分配或风险计算。")}
     {table("期初前未完结订单", data["data_checks"]["old_open_lines"], [("row","Sales 行"),("so","SO/CI"),("sku","SKU"),("qty","数量"),("order_date","订单日期"),("required_arrival","客户要求到仓日")])}
     {table("没有可靠到仓日期的采购", data["data_checks"]["purchase_without_usable_eta"], [("row","Purchase 行"),("po","PO"),("sku","SKU"),("product","产品"),("qty","数量"),("factory_date","工厂发货时间"),("sailing_date","船期"),("port_eta","到港日"),("available_date","预计到仓日"),("reliability","状态")])}
     {table("运输天数待维护", data["data_checks"]["transit_unknown_dc"], [("customer","客户"),("delivery_center","客户仓"),("current_days","当前天数"),("issue","问题"),("action","处理建议")], "这些客户仓暂时按默认 7 天计算，请在运输设置页维护。")}
@@ -2997,7 +3017,8 @@ function compareSps(lines) {{
     const issue = !fuQty ? 'New in SPS' : (Math.abs(fuQty - l.qty) > 0.0001 ? 'Qty mismatch' : 'Already in Follow Up');
     const upcCheck = spsUpcIssue(l.raw_sku, l.sku, l.upc);
     const casePackCheck = spsCasePackIssue(l.sku, l.qty);
-    return {{issue, order:l.order, raw_sku:l.raw_sku, sku:l.sku, product:l.product, customer:l.customer, dc:l.dc, order_date:l.orderDate, etd:l.requested, ship_date:l.shipDate, sps_qty:l.qty, unit_price:l.unit_price || '', followup_qty:fuQty, qty_diff:l.qty - fuQty, ...upcCheck, ...casePackCheck, source_file:l.source_file}};
+    const requested_status = l.requested ? 'OK' : '缺少客户要求到仓日';
+    return {{issue, order:l.order, raw_sku:l.raw_sku, sku:l.sku, product:l.product, customer:l.customer, dc:l.dc, order_date:l.orderDate, etd:l.requested, requested_status, ship_date:l.shipDate, sps_qty:l.qty, unit_price:l.unit_price || '', followup_qty:fuQty, qty_diff:l.qty - fuQty, ...upcCheck, ...casePackCheck, source_file:l.source_file}};
   }}).sort((a,b) => String(a.issue).localeCompare(String(b.issue)) || String(a.order).localeCompare(String(b.order)) || String(a.sku).localeCompare(String(b.sku)));
 }}
 function simulateNewOrderRisk(diff) {{
@@ -3054,7 +3075,10 @@ function simulateNewOrderRisk(diff) {{
       const warehouseReady = warehouseReadyDate(coverDate);
       let status = 'OK';
       let action = 'Can be covered by current stock.';
-      if (need > 0) {{
+      if (!line.required_arrival) {{
+        status = '交期待确认';
+        action = '缺少客户要求到仓日，系统不能判定该订单无风险；请先核对 SPS 订单头交期。';
+      }} else if (need > 0) {{
         status = 'Critical Risk';
         action = `Short ${{need}} units after current stock and known POs.`;
       }} else if (coverDate && line.latest_ship && coverDate > line.latest_ship) {{
@@ -3200,7 +3224,7 @@ function renderSpsDiff(diff) {{
     simplePanel('SPS 新单 SKU 总体覆盖', spsSkuCoverage, [['status','状态'],['sku','SKU'],['product','产品'],['onhand','当前库存'],['existing_demand','已有未交货需求'],['new_sps_demand','SPS新单需求'],['total_demand','总需求'],['confirmed_incoming','确认在途'],['planned_incoming','预计在途'],['reliable_gap','可靠缺口'],['total_gap','总缺口'],['first_cover','首次完全覆盖'],['action','处理建议']], '判断当前库存 + PO 供应是否能覆盖“已有需求 + SPS 新单需求”。可靠缺口不含预计在途；总缺口包含所有已知 PO。') +
     simplePanel('SPS PO 覆盖阶梯', spsPoLadder, [['status','状态'],['sku','SKU'],['product','产品'],['step','库存/PO'],['eta','预计到仓'],['reliability','可靠性'],['step_qty','数量'],['cumulative_supply','累计供应'],['total_demand','总需求'],['remaining_gap','该节点后缺口'],['conclusion','结论']], '按 SKU 从上往下看：每个 PO 到仓后，累计供应是否已经覆盖总需求。') +
     simplePanel('SPS 新单逐行影响', lastSpsRiskPreview, [['status','状态'],['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['required_arrival','客户要求到仓日'],['latest_ship','最晚美仓发货日'],['suggested_customer_date','建议客户交期'],['qty','数量'],['onhand','当前库存'],['existing_demand','已有需求'],['new_sps_demand','SPS新单需求'],['gap_after_sps','导入后缺口'],['cover','覆盖来源'],['uncovered','未覆盖数量'],['why','说明'],['action','处理建议']], '逐行解释上方 SKU 汇总后的订单影响。');
-  document.getElementById('spsResults').innerHTML = simpleTable(diff, [['issue','问题'],['upc_status','UPC检查'],['case_pack_status','箱规检查'],['order','SO/PO'],['raw_sku','客户编码'],['sku','SKU'],['sps_upc','SPS UPC'],['expected_upc','应有UPC'],['case_pack','箱规'],['case_pack_remainder','箱规余数'],['product','产品'],['customer','客户'],['dc','客户仓'],['order_date','订单日期'],['etd','ETD'],['sps_qty','SPS数量'],['unit_price','单价'],['followup_qty','Follow Up数量'],['qty_diff','数量差异'],['source_file','文件']]);
+  document.getElementById('spsResults').innerHTML = simpleTable(diff, [['issue','问题'],['requested_status','交期检查'],['upc_status','UPC检查'],['case_pack_status','箱规检查'],['order','SO/PO'],['raw_sku','客户编码'],['sku','SKU'],['sps_upc','SPS UPC'],['expected_upc','应有UPC'],['case_pack','箱规'],['case_pack_remainder','箱规余数'],['product','产品'],['customer','客户'],['dc','客户仓'],['order_date','订单日期'],['etd','客户要求到仓日'],['sps_qty','SPS数量'],['unit_price','单价'],['followup_qty','Follow Up数量'],['qty_diff','数量差异'],['source_file','文件']]);
 }}
 function getConfirmedImports() {{
   if (window.SCM_DATA.shared_state_mode) return window.SCM_DATA.confirmed_sps_imports || [];

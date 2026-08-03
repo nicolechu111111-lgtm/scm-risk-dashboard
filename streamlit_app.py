@@ -734,7 +734,21 @@ def parse_sps_csv_uploads(files, data: dict) -> list[dict]:
         except Exception:
             dialect = csv.excel
         reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-        for row in reader:
+        # SPS 的 H 记录保存订单级字段，后续 D 记录只保存 SKU 与数量。
+        # D 记录必须继承最近一条 H 记录，才能正确计算交期风险。
+        context: dict[str, str] = {}
+        inherited_fields = [
+            "PO Number", "PO Date", "Delivery Dates", "Requested Delivery Date",
+            "Ship Dates", "Ship To Name", "Ship To Location", "Partner",
+        ]
+        for source_row in reader:
+            row = dict(source_row)
+            for field in inherited_fields:
+                value = row.get(field)
+                if value is not None and str(value).strip():
+                    context[field] = value
+                elif field in context:
+                    row[field] = context[field]
             order = normalize_order(pick(row, ["OrderKey", "PO Number", "SPS PO", "PO", "Purchase Order", "Purchase Order Number", "Retailers PO", "Customer PO", "Order", "Order Number"]))
             raw_sku = normalize_sku(pick(row, ["SKUKey", "SKU", "Buyers Catalog or Stock Keeping #", "Buyer Part Number", "Vendor Part Number", "Item", "Item Code", "Product Code"]))
             upc = normalize_upc(pick(row, ["UPC/EAN", "UPC", "GTIN"]))
@@ -803,6 +817,7 @@ def parse_sps_csv_uploads(files, data: dict) -> list[dict]:
         pack = int(float(case_pack_by_sku.get(line["sku"], 0) or 0))
         remainder = int(line["qty"] % pack) if pack else ""
         case_pack_status = "No Case Pack" if not pack else ("OK" if remainder == 0 else "Qty not case-pack multiple")
+        requested_status = "OK" if line.get("requested") else "缺少客户要求到仓日"
         diff.append(
             {
                 "issue": issue,
@@ -816,6 +831,7 @@ def parse_sps_csv_uploads(files, data: dict) -> list[dict]:
                 "dc": line["dc"],
                 "order_date": line["orderDate"],
                 "etd": line["requested"],
+                "requested_status": requested_status,
                 "ship_date": line["shipDate"],
                 "sps_qty": int(line["qty"]) if float(line["qty"]).is_integer() else line["qty"],
                 "unit_price": line.get("unit_price") or "",
@@ -905,14 +921,20 @@ def render_shared_sps_controls(data: dict) -> None:
         new_rows = [x for x in diff if x.get("issue") == "New in SPS"]
         upc_issues = [x for x in diff if x.get("upc_status") and x.get("upc_status") != "OK"]
         pack_issues = [x for x in diff if x.get("case_pack_status") and x.get("case_pack_status") != "OK"]
+        timing_issues = [x for x in diff if x.get("requested_status") and x.get("requested_status") != "OK"]
         st.sidebar.write(f"SPS 新增：{len(new_rows)}")
-        if upc_issues or pack_issues:
-            st.sidebar.error(f"导入前强提醒：UPC 异常 {len(upc_issues)} 条，箱规异常 {len(pack_issues)} 条。请核对后再确认导入。")
-            issue_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "sps_qty", "sps_upc", "expected_upc", "upc_status", "case_pack", "case_pack_remainder", "case_pack_status", "source_file"]
+        if upc_issues or pack_issues or timing_issues:
+            st.sidebar.error(
+                f"导入前强提醒：UPC 异常 {len(upc_issues)} 条，箱规异常 {len(pack_issues)} 条，"
+                f"客户交期缺失 {len(timing_issues)} 条。交期缺失的订单不能判定为无风险。"
+            )
+            issue_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "requested_status", "sps_qty", "sps_upc", "expected_upc", "upc_status", "case_pack", "case_pack_remainder", "case_pack_status", "source_file"]
             issue_rows = [
                 {key: row.get(key, "") for key in issue_cols}
                 for row in diff
-                if row.get("upc_status") not in {"", "OK", None} or row.get("case_pack_status") not in {"", "OK", None}
+                if row.get("upc_status") not in {"", "OK", None}
+                or row.get("case_pack_status") not in {"", "OK", None}
+                or row.get("requested_status") not in {"", "OK", None}
             ]
             with st.sidebar.expander(f"查看全部异常明细 ({len(issue_rows)})", expanded=True):
                 st.dataframe(issue_rows, use_container_width=True, hide_index=True)
@@ -922,8 +944,8 @@ def render_shared_sps_controls(data: dict) -> None:
             preview_cols = ["issue", "order", "sku", "product", "customer", "dc", "etd", "sps_qty", "upc_status", "case_pack_status"]
             st.dataframe([{k: row.get(k, "") for k in preview_cols} for row in diff[:20]], use_container_width=True, hide_index=True)
         allow_issue = True
-        if upc_issues or pack_issues:
-            allow_issue = st.sidebar.checkbox("存在 UPC/箱规异常，仍确认导入", value=False)
+        if upc_issues or pack_issues or timing_issues:
+            allow_issue = st.sidebar.checkbox("存在数据异常，仍确认导入", value=False)
         if st.sidebar.button("确认导入 SPS 新单到团队看板", disabled=not new_rows or not allow_issue):
             batch = {
                 "confirmed_at": datetime.now().isoformat(timespec="seconds"),
