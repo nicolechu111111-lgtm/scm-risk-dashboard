@@ -2552,10 +2552,6 @@
   },
   "upload_history": [
     {
-      "time": "2026-08-03T07:11:10",
-      "file": "SCM Follow Up.xlsx"
-    },
-    {
       "time": "2026-07-30T05:59:44",
       "file": "SCM Follow Up.xlsx"
     },
@@ -2613,6 +2609,11 @@
     }
   ],
   "operation_log": [
+    {
+      "time": "2026-08-03T07:11:12",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up.xlsx"
+    },
     {
       "time": "2026-08-03T01:48:15",
       "action": "确认导入 SPS 新单",
