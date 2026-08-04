@@ -791,10 +791,16 @@ def parse_sps_csv_uploads(files, data: dict) -> list[dict]:
             if not prev.get("upc") and line.get("upc"):
                 prev["upc"] = line["upc"]
 
-    existing = {}
-    for line in data.get("so_lines", []):
-        key = f"{normalize_order(line.get('so'))}__{normalize_sku(line.get('sku'))}"
-        existing[key] = existing.get(key, 0) + normalize_qty(line.get("qty"))
+    # 查重必须覆盖全部 Sales 行，包括已有 ATD 的已送达订单。
+    # 风险看板的 so_lines 只保留未送达订单，不能用于判断“是否已回填”。
+    existing = {
+        str(key): normalize_qty(qty)
+        for key, qty in (data.get("followup_order_sku_qty") or {}).items()
+    }
+    if not existing:
+        for line in data.get("so_lines", []):
+            key = f"{normalize_order(line.get('so'))}__{normalize_sku(line.get('sku'))}"
+            existing[key] = existing.get(key, 0) + normalize_qty(line.get("qty"))
 
     diff = []
     for line in grouped.values():

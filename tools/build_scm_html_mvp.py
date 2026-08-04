@@ -461,6 +461,7 @@ def main():
     old_open_lines = []
     excluded_sales_lines = []
     delivered_sales_lines = []
+    followup_order_sku_qty = defaultdict(float)
     shipped_new_by_sku = defaultdict(float)
     sales_order_date_col = col(sales_cols, "Date", default=0)
     sales_sku_col = col(sales_cols, "Product Code", default=2)
@@ -482,6 +483,10 @@ def main():
         delivered_at = as_date(value_at(row, sales_delivered_col))
         if not sku or not so or qty <= 0:
             continue
+
+        # SPS 查重需要识别 Sales 的全部订单（含已送达订单）；
+        # 风险计算则只使用后面筛出的未送达订单。
+        followup_order_sku_qty[f"{so}__{sku.upper()}"] += qty
 
         if is_excluded_sales_order(raw_customer, so, dc):
             if not delivered_at:
@@ -1008,6 +1013,10 @@ def main():
         "product_cost_by_sku": {sku: cost for sku, cost in product_cost.items() if cost},
         "product_upc_by_sku": {sku: upc for sku, upc in product_upc.items() if upc},
         "case_pack_by_sku": {sku: pack for sku, pack in case_pack_by_sku.items() if pack},
+        "followup_order_sku_qty": {
+            key: int(qty) if float(qty).is_integer() else qty
+            for key, qty in followup_order_sku_qty.items()
+        },
         "inventory_by_sku": {
             sku: {
                 "sku": sku,
@@ -2679,7 +2688,19 @@ function moneyValue(n) {{
   return Number.isFinite(v) && v ? Math.round(v * 100) / 100 : '';
 }}
 function followUpOrderSkuKeys() {{
-  return new Set((window.SCM_DATA.so_lines || []).map(x => `${{normalizeOrder(x.so)}}__${{normalizeSku(x.sku)}}`));
+  return new Set(followUpOrderSkuQty().keys());
+}}
+function followUpOrderSkuQty() {{
+  const fullIndex = window.SCM_DATA.followup_order_sku_qty || {{}};
+  if (Object.keys(fullIndex).length) {{
+    return new Map(Object.entries(fullIndex).map(([key, qty]) => [key, Number(qty || 0)]));
+  }}
+  const fallback = new Map();
+  (window.SCM_DATA.so_lines || []).forEach(line => {{
+    const key = `${{normalizeOrder(line.so)}}__${{normalizeSku(line.sku)}}`;
+    fallback.set(key, (fallback.get(key) || 0) + Number(line.qty || 0));
+  }});
+  return fallback;
 }}
 function pendingConfirmedSpsRows() {{
   const existing = followUpOrderSkuKeys();
@@ -2992,11 +3013,7 @@ function spsLineFromRow(row, fileName) {{
 let lastSpsDiff = [];
 let lastSpsRiskPreview = [];
 function compareSps(lines) {{
-  const existing = new Map();
-  window.SCM_DATA.so_lines.forEach(l => {{
-    const key = `${{normalizeOrder(l.so)}}__${{normalizeSku(l.sku)}}`;
-    existing.set(key, (existing.get(key) || 0) + Number(l.qty || 0));
-  }});
+  const existing = followUpOrderSkuQty();
   const grouped = new Map();
   lines.forEach(l => {{
     const key = `${{l.order}}__${{l.sku}}`;
