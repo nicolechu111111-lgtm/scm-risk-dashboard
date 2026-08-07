@@ -2815,10 +2815,6 @@
   },
   "upload_history": [
     {
-      "time": "2026-08-07T05:40:45",
-      "file": "SCM Follow Up.xlsx"
-    },
-    {
       "time": "2026-08-07T03:26:34",
       "file": "SCM Follow Up.xlsx"
     },
@@ -2900,6 +2896,11 @@
     }
   ],
   "operation_log": [
+    {
+      "time": "2026-08-07T05:40:47",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up.xlsx"
+    },
     {
       "time": "2026-08-07T05:28:35",
       "action": "仓库邮件标记已发送",
