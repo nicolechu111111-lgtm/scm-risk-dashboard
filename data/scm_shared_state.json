@@ -3566,6 +3566,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-08-11T08:50:17",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up (1).xlsx"
+    },
+    {
       "time": "2026-08-11T08:44:59",
       "action": "更新人工分配",
       "detail": "WJ-46 / 31820611 / 96"
