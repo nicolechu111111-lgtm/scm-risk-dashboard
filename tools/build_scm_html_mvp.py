@@ -1529,7 +1529,8 @@ function capManualStockInput(el) {{
     .reduce((sum, x) => {{
       const saved = all[allocationKey(sku, x.so)] || {{}};
       const hasManualQty = String(saved.assign_qty ?? '').trim() !== '';
-      return sum + (hasManualQty ? Number(saved.assign_qty || 0) : Number(x.stock_used || 0));
+      // 手动指定优先，只限制其他手动指定数量，不能让系统默认分配拦住人工调拨。
+      return sum + (hasManualQty ? Number(saved.assign_qty || 0) : 0);
     }}, 0);
   const maxAllowed = Math.max(Math.min(rowLimit, stockLimit - otherAssigned), 0);
   let value = Number(el.value || 0);
@@ -1538,7 +1539,7 @@ function capManualStockInput(el) {{
     value = maxAllowed;
     el.value = value || '';
     el.title = `Max available for this row is ${{maxAllowed}}`;
-    alert(`This SKU only has ${{stockLimit}} current on-hand. Max available for this row is ${{maxAllowed}}.`);
+    alert(`该 SKU 当前库存为 ${{stockLimit}}，本订单最多可人工分配 ${{maxAllowed}}。`);
   }}
   return value;
 }}
@@ -1553,19 +1554,51 @@ function manualStatus(line, manualQty, manualMode) {{
 function manualCalcForSku(sku, lines) {{
   const all = getAllocations();
   const skuInfo = skuInfoFor(sku);
-  const savedRows = lines.map(line => all[allocationKey(sku, line.so)] || {{}}).filter(isDecisionRow);
-  const manualMode = savedRows.some(x => String(x.assign_qty ?? '').trim() !== '');
+  const lineBySo = new Map();
+  for (const rawLine of lines) {{
+    const so = String(rawLine.so || '');
+    if (!so) continue;
+    if (!lineBySo.has(so)) {{
+      lineBySo.set(so, {{...rawLine, qty:Number(rawLine.qty || 0), stock_used:Number(rawLine.stock_used || 0)}});
+    }} else {{
+      const merged = lineBySo.get(so);
+      merged.qty += Number(rawLine.qty || 0);
+      merged.stock_used += Number(rawLine.stock_used || 0);
+    }}
+  }}
+  const uniqueLines = [...lineBySo.values()];
+  const savedRows = uniqueLines.map(line => all[allocationKey(sku, line.so)] || {{}}).filter(isDecisionRow);
+  const manualMode = savedRows.some(x => String(x.assign_qty ?? '').trim() !== '' || x.assign === 'hold');
   const stockLimit = Number(skuInfo.current_onhand || 0);
   let rollingStock = stockLimit;
   const manualCalc = new Map();
-  for (const line of lines) {{
+  // 第一轮：用户明确填写的数量优先兑现，确保手工调拨能覆盖原系统分配。
+  for (const line of uniqueLines) {{
     const saved = all[allocationKey(sku, line.so)] || {{}};
     const hasManualQty = String(saved.assign_qty ?? '').trim() !== '';
-    let manualQty = hasManualQty ? Number(saved.assign_qty || 0) : Number(line.stock_used || 0);
+    if (!hasManualQty) continue;
+    let manualQty = Number(saved.assign_qty || 0);
     manualQty = Math.max(Math.min(manualQty, Number(line.qty || 0), rollingStock), 0);
     rollingStock -= manualQty;
-    const after = manualStatus(line, manualQty, manualMode);
-    manualCalc.set(line.so, {{manualQty, manualMode, after}});
+    manualCalc.set(line.so, {{manualQty, manualMode}});
+  }}
+  // 第二轮：未手工指定的订单，再按原有系统分配吃掉剩余库存。
+  for (const line of uniqueLines) {{
+    const saved = all[allocationKey(sku, line.so)] || {{}};
+    const hasManualQty = String(saved.assign_qty ?? '').trim() !== '';
+    if (hasManualQty || saved.assign === 'hold') {{
+      if (!manualCalc.has(line.so)) manualCalc.set(line.so, {{manualQty:0, manualMode}});
+      continue;
+    }}
+    let manualQty = Number(line.stock_used || 0);
+    manualQty = Math.max(Math.min(manualQty, Number(line.qty || 0), rollingStock), 0);
+    rollingStock -= manualQty;
+    manualCalc.set(line.so, {{manualQty, manualMode}});
+  }}
+  for (const line of uniqueLines) {{
+    const calc = manualCalc.get(line.so) || {{manualQty:0, manualMode}};
+    const after = manualStatus(line, calc.manualQty, manualMode);
+    manualCalc.set(line.so, {{...calc, after}});
   }}
   return {{manualCalc, savedRows, stockLimit, manualMode}};
 }}

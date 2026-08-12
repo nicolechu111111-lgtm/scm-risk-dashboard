@@ -605,6 +605,19 @@ def render_shared_allocation_controls(data: dict) -> None:
                     if qty_num > int(float(line.get("qty", 0) or 0)):
                         st.error("人工分配不能超过该 SO 的需求数量。")
                         st.stop()
+                    # 人工指定的订单优先于系统默认分配；只与其他人工指定数量争用现货。
+                    other_manual = 0
+                    for other_key, other in allocations.items():
+                        if other_key == key or str(other.get("sku", "")) != selected_sku:
+                            continue
+                        try:
+                            other_manual += max(int(float(str(other.get("assign_qty", "")).strip() or 0)), 0)
+                        except Exception:
+                            pass
+                    available_for_manual = max(stock_limit - other_manual, 0)
+                    if qty_num > available_for_manual:
+                        st.error(f"该 SKU 可供人工指定的库存只剩 {available_for_manual} 件。请先减少其他订单的人工分配。")
+                        st.stop()
                     allocations[key] = {
                         "sku": selected_sku,
                         "so": so,
