@@ -3763,10 +3763,6 @@
   },
   "upload_history": [
     {
-      "time": "2026-08-16T03:44:47",
-      "file": "SCM Follow Up.xlsx"
-    },
-    {
       "time": "2026-08-15T04:43:11",
       "file": "SCM Follow Up2.xlsx"
     },
@@ -3904,6 +3900,11 @@
     }
   ],
   "operation_log": [
+    {
+      "time": "2026-08-16T03:44:49",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up.xlsx"
+    },
     {
       "time": "2026-08-15T04:43:13",
       "action": "上传 Follow Up",
