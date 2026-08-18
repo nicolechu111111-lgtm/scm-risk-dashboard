@@ -1006,6 +1006,7 @@ def main():
         "manual_allocations": shared_state.get("manual_allocations", {}) if isinstance(shared_state.get("manual_allocations", {}), dict) else {},
         "transit_settings": shared_state.get("transit_settings", {"stateDays": {}, "dcDays": {}}) if isinstance(shared_state.get("transit_settings", {}), dict) else {"stateDays": {}, "dcDays": {}},
         "confirmed_sps_imports": shared_state.get("confirmed_sps_imports", []) if isinstance(shared_state.get("confirmed_sps_imports", []), list) else [],
+        "cancelled_sps_lines": shared_state.get("cancelled_sps_lines", {}) if isinstance(shared_state.get("cancelled_sps_lines", {}), dict) else {},
         "customer_code_to_sku": customer_code_to_sku,
         "customer_code_to_upc": customer_code_to_upc,
         "upc_to_sku": upc_to_sku,
@@ -2735,11 +2736,23 @@ function followUpOrderSkuQty() {{
   }});
   return fallback;
 }}
+function cancelledSpsLines() {{
+  if (window.SCM_DATA.shared_state_mode) return window.SCM_DATA.cancelled_sps_lines || {{}};
+  try {{ return JSON.parse(localStorage.getItem('scm_cancelled_sps_lines') || '{{}}'); }}
+  catch {{ return {{}}; }}
+}}
+function spsLineKey(row) {{
+  return `${{normalizeOrder(row?.order)}}__${{normalizeSku(row?.sku)}}`;
+}}
+function isCancelledSpsLine(row) {{
+  return !!cancelledSpsLines()[spsLineKey(row)];
+}}
 function pendingConfirmedSpsRows() {{
   const existing = followUpOrderSkuKeys();
   return getConfirmedImports()
     .flatMap(batch => batch.new_rows || [])
     .filter(x => !isExcludedSalesOrder(x.customer, x.order, x.dc))
+    .filter(x => !isCancelledSpsLine(x))
     .filter(x => !existing.has(`${{normalizeOrder(x.order)}}__${{normalizeSku(x.sku)}}`));
 }}
 function postedConfirmedSpsRows() {{
@@ -2747,7 +2760,15 @@ function postedConfirmedSpsRows() {{
   return getConfirmedImports()
     .flatMap(batch => batch.new_rows || [])
     .filter(x => !isExcludedSalesOrder(x.customer, x.order, x.dc))
+    .filter(x => !isCancelledSpsLine(x))
     .filter(x => existing.has(`${{normalizeOrder(x.order)}}__${{normalizeSku(x.sku)}}`));
+}}
+function cancelledConfirmedSpsRows() {{
+  return getConfirmedImports()
+    .flatMap(batch => batch.new_rows || [])
+    .filter(x => !isExcludedSalesOrder(x.customer, x.order, x.dc))
+    .filter(isCancelledSpsLine)
+    .map(x => ({{...x, cancel_reason:cancelledSpsLines()[spsLineKey(x)]?.reason || '已取消/无需回填'}}));
 }}
 function confirmedSpsSalesRows() {{
   const rows = pendingConfirmedSpsRows();
@@ -3319,13 +3340,16 @@ function renderImportNotice() {{
   const rows = imports.flatMap(x => x.new_rows || []);
   const pendingRows = pendingConfirmedSpsRows();
   const postedRows = postedConfirmedSpsRows();
+  const cancelledRows = cancelledConfirmedSpsRows();
   const latest = imports[imports.length - 1];
   const confirmedHtml = pendingRows.length
     ? `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。待回填行已纳入本地计算；已在 Follow Up 找到的行会排除，避免需求重复。</p></div>
-        <div class="detail-grid">${{mini('确认行数', rows.length)}}${{mini('待回填', pendingRows.length)}}${{mini('已在 Follow Up', postedRows.length)}}${{mini('是否需导出', '是')}}</div>
+        <div class="detail-grid">${{mini('确认行数', rows.length)}}${{mini('待回填', pendingRows.length)}}${{mini('已在 Follow Up', postedRows.length)}}${{mini('已取消/无需回填', cancelledRows.length)}}${{mini('是否需导出', '是')}}</div>
         ${{simpleTable(pendingRows, [['issue','问题'],['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量'],['source_file','文件']])}}</section>`
-    : `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。${{postedRows.length}} 条已全部回填到 Follow Up，不再参与重复计算或导出。</p></div>
-        <details><summary>查看已回填历史（${{postedRows.length}} 条）</summary>${{simpleTable(postedRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量']])}}</details></section>`;
+    : `<section class="panel"><div class="panel-title"><h2>已确认 SPS 新订单</h2><p>最近确认时间：${{esc(latest.confirmed_at)}}。${{postedRows.length}} 条已全部回填或标记取消，不再参与重复计算或导出。</p></div>
+        <div class="detail-grid">${{mini('已在 Follow Up', postedRows.length)}}${{mini('已取消/无需回填', cancelledRows.length)}}</div>
+        <details><summary>查看已回填历史（${{postedRows.length}} 条）</summary>${{simpleTable(postedRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['customer','客户'],['dc','客户仓'],['etd','ETD'],['sps_qty','数量']])}}</details>
+        <details><summary>查看已取消历史（${{cancelledRows.length}} 条）</summary>${{simpleTable(cancelledRows, [['order','SO/PO'],['sku','SKU'],['product','产品'],['sps_qty','数量'],['cancel_reason','取消原因']])}}</details></section>`;
   panel.style.display = 'block';
   panel.innerHTML = confirmedHtml;
 }}

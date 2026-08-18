@@ -307,7 +307,12 @@ def save_email_sent(data: dict) -> None:
 
 
 def default_shared_state() -> dict:
-    return {"manual_allocations": {}, "transit_settings": {"stateDays": {}, "dcDays": {}}, "confirmed_sps_imports": []}
+    return {
+        "manual_allocations": {},
+        "transit_settings": {"stateDays": {}, "dcDays": {}},
+        "confirmed_sps_imports": [],
+        "cancelled_sps_lines": {},
+    }
 
 
 def load_shared_state() -> dict:
@@ -321,6 +326,7 @@ def load_shared_state() -> dict:
     data.setdefault("manual_allocations", {})
     data.setdefault("transit_settings", {"stateDays": {}, "dcDays": {}})
     data.setdefault("confirmed_sps_imports", [])
+    data.setdefault("cancelled_sps_lines", {})
     if not isinstance(data["manual_allocations"], dict):
         data["manual_allocations"] = {}
     if not isinstance(data["transit_settings"], dict):
@@ -329,6 +335,8 @@ def load_shared_state() -> dict:
     data["transit_settings"].setdefault("dcDays", {})
     if not isinstance(data["confirmed_sps_imports"], list):
         data["confirmed_sps_imports"] = []
+    if not isinstance(data["cancelled_sps_lines"], dict):
+        data["cancelled_sps_lines"] = {}
     return data
 
 
@@ -930,6 +938,17 @@ def render_shared_transit_controls(data: dict) -> None:
 def render_shared_sps_controls(data: dict) -> None:
     state = load_shared_state()
     confirmed = state.get("confirmed_sps_imports", [])
+    cancelled = state.get("cancelled_sps_lines", {})
+
+    def sps_line_key(row: dict) -> str:
+        return f"{normalize_order(row.get('order'))}__{normalize_sku(row.get('sku'))}"
+
+    followup_index = {str(key) for key in (data.get("followup_order_sku_qty") or {}).keys()}
+    confirmed_rows = [row for batch in confirmed for row in (batch.get("new_rows") or [])]
+    pending_rows = [
+        row for row in confirmed_rows
+        if sps_line_key(row) not in followup_index and sps_line_key(row) not in cancelled
+    ]
 
     st.sidebar.divider()
     st.sidebar.header("SPS 新单共享导入")
@@ -937,11 +956,19 @@ def render_shared_sps_controls(data: dict) -> None:
     files = st.sidebar.file_uploader("选择 SPS CSV 文件", type=["csv", "txt"], accept_multiple_files=True, key="shared_sps_files")
     if files:
         diff = parse_sps_csv_uploads(files, data)
+        for row in diff:
+            cancelled_row = cancelled.get(sps_line_key(row))
+            if cancelled_row:
+                row["issue"] = "Previously cancelled in SPS"
+                row["cancel_reason"] = cancelled_row.get("reason", "")
         new_rows = [x for x in diff if x.get("issue") == "New in SPS"]
+        recurring_cancelled = [x for x in diff if x.get("issue") == "Previously cancelled in SPS"]
         upc_issues = [x for x in diff if x.get("upc_status") and x.get("upc_status") != "OK"]
         pack_issues = [x for x in diff if x.get("case_pack_status") and x.get("case_pack_status") != "OK"]
         timing_issues = [x for x in diff if x.get("requested_status") and x.get("requested_status") != "OK"]
         st.sidebar.write(f"SPS 新增：{len(new_rows)}")
+        if recurring_cancelled:
+            st.sidebar.warning(f"发现 {len(recurring_cancelled)} 条此前已取消 SKU 仍出现在 SPS，请确认销售端是否已完成删除。")
         if upc_issues or pack_issues or timing_issues:
             st.sidebar.error(
                 f"导入前强提醒：UPC 异常 {len(upc_issues)} 条，箱规异常 {len(pack_issues)} 条，"
@@ -981,6 +1008,45 @@ def render_shared_sps_controls(data: dict) -> None:
             if current:
                 recalculate(current)
             st.rerun()
+
+    with st.sidebar.expander(f"待回填/已取消 SKU ({len(pending_rows)}/{len(cancelled)})", expanded=False):
+        st.caption("销售确认从 SO 删除的 SKU，请标记为“已取消/无需回填”。该 SKU 会保留历史，但不再参与风险、补货或导出。")
+        if not pending_rows:
+            st.caption("暂无待回填的已确认 SPS SKU。")
+        for row in pending_rows[:80]:
+            key = sps_line_key(row)
+            label = f"{row.get('order','')} · {row.get('sku','')} · {row.get('sps_qty','')} 件"
+            st.caption(label)
+            reason = st.text_input("取消原因", key=f"cancel_sps_reason_{key}", placeholder="例如：销售确认从 SO 删除，后续到货过晚")
+            if st.button("标记已取消/无需回填", key=f"cancel_sps_{key}"):
+                cancelled[key] = {
+                    "order": row.get("order", ""),
+                    "sku": row.get("sku", ""),
+                    "product": row.get("product", ""),
+                    "qty": row.get("sps_qty", ""),
+                    "reason": reason.strip() or "销售确认从 SO 删除",
+                    "cancelled_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                state["cancelled_sps_lines"] = cancelled
+                save_shared_state(state)
+                append_log("标记 SPS SKU 已取消", f"{row.get('order','')} / {row.get('sku','')} / {cancelled[key]['reason']}")
+                current = latest_upload()
+                if current:
+                    recalculate(current)
+                st.rerun()
+        if cancelled:
+            st.caption("已取消记录")
+            for key, row in list(cancelled.items())[:80]:
+                st.caption(f"{row.get('order','')} · {row.get('sku','')} · {row.get('reason','')}")
+                if st.button("恢复为待回填", key=f"restore_sps_{key}"):
+                    cancelled.pop(key, None)
+                    state["cancelled_sps_lines"] = cancelled
+                    save_shared_state(state)
+                    append_log("恢复 SPS SKU 待回填", key)
+                    current = latest_upload()
+                    if current:
+                        recalculate(current)
+                    st.rerun()
 
     with st.sidebar.expander(f"已确认 SPS 批次 ({len(confirmed)})", expanded=False):
         if not confirmed:
