@@ -3791,7 +3791,17 @@
           "po454348667_366325.csv"
         ]
       }
-    ]
+    ],
+    "cancelled_sps_lines": {
+      "31877481__WJ-46": {
+        "order": "31877481",
+        "sku": "WJ-46",
+        "product": "MINI/MOE RUFFLE BOWL",
+        "qty": 192,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-08-18T03:50:34"
+      }
+    }
   },
   "upload_history": [
     {
