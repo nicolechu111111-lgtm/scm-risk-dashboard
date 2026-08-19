@@ -3963,6 +3963,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-08-19T01:13:24",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up.xlsx"
+    },
+    {
       "time": "2026-08-18T03:50:36",
       "action": "标记 SPS SKU 已取消",
       "detail": "31877481 / WJ-46 / 销售确认从 SO 删除"
