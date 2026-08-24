@@ -412,8 +412,8 @@ def main():
                     reliability = "已到港待送仓"
                 else:
                     reliability = "确认在途" if (etd or bol) else "预计在途"
-        if not reliability and factory_date and factory_date > TODAY:
-            reliability = "未发货-需确认工厂交期"
+        if not reliability and factory_date and not etd:
+            reliability = "工厂发货逾期" if factory_date < TODAY else "未发货-需确认工厂交期"
 
         entry = {
             "row": i,
@@ -2177,11 +2177,6 @@ function buildWarehouseShipReminderRows(view) {{
 }}
 function buildAllInboundShipmentRows(view) {{
   const shipmentByBol = new Map((window.SCM_DATA.shipment_control_rows || []).map(x => [String(x.bol || ''), x]));
-  const linesBySku = new Map();
-  for (const line of view.lines) {{
-    if (!linesBySku.has(line.sku)) linesBySku.set(line.sku, []);
-    linesBySku.get(line.sku).push(line);
-  }}
   const groups = new Map();
   for (const [sku, pos] of Object.entries(window.SCM_DATA.future_po_by_sku || {{}})) {{
     for (const po of usableFuturePos(sku)) {{
@@ -2206,9 +2201,12 @@ function buildAllInboundShipmentRows(view) {{
         planned_wh_eta:plannedWhEta,
         warehouse_ready_date:warehouseReadyDate(plannedWhEta),
         earliest_so:'',
+        earliest_required_arrival:'',
         earliest_latest_ship:'',
+        affected_sos:new Set(),
+        affected_skus:new Set(),
         days_margin:'',
-        action:'按当前 SO 时间暂无紧急风险，继续跟进船期和送仓。',
+        action:'当前未被未交货 SO 实际占用，继续跟进船期和送仓。',
       }};
       g.related_pos.add(po.po || '');
       g.sku_count.add(sku);
@@ -2219,7 +2217,18 @@ function buildAllInboundShipmentRows(view) {{
       g.port_delay_risk = g.port_delay_risk || !!po.port_delay_risk;
       if (!g.planned_wh_eta || (plannedWhEta && plannedWhEta < g.planned_wh_eta)) g.planned_wh_eta = plannedWhEta;
       g.warehouse_ready_date = warehouseReadyDate(g.planned_wh_eta);
-      for (const line of (linesBySku.get(sku) || [])) {{
+      // Only assess SOs that this exact PO/BOL was actually allocated to.
+      const dependentLines = view.lines.filter(line => (line.cover_details || []).some(cover =>
+        String(line.sku || '') === String(sku || '') &&
+        String(cover.po || '') === String(po.po || '') &&
+        String(cover.bol || '') === String(po.bol || '')
+      ));
+      for (const line of dependentLines) {{
+        g.affected_sos.add(line.so);
+        g.affected_skus.add(line.sku);
+        if (!g.earliest_required_arrival || (line.required_arrival && line.required_arrival < g.earliest_required_arrival)) {{
+          g.earliest_required_arrival = line.required_arrival;
+        }}
         if (!g.earliest_latest_ship || (line.latest_ship && line.latest_ship < g.earliest_latest_ship)) {{
           g.earliest_latest_ship = line.latest_ship;
           g.earliest_so = line.so;
@@ -2244,9 +2253,121 @@ function buildAllInboundShipmentRows(view) {{
       ...g,
       related_pos:[...g.related_pos].filter(Boolean).join('; '),
       sku_count:g.sku_count.size,
+      affected_so_count:g.affected_sos.size,
+      affected_sku_count:g.affected_skus.size,
       qty:Math.round(g.qty),
     }};
   }}).sort((a,b) => statusRank(a.status)-statusRank(b.status) || String(a.port_eta || '9999-12-31').localeCompare(String(b.port_eta || '9999-12-31')) || String(a.bol).localeCompare(String(b.bol)));
+}}
+function buildBolDetailRows(view) {{
+  const rows = [];
+  const coveredBols = new Set();
+  for (const line of view.lines) {{
+    for (const cover of (line.cover_details || [])) {{
+      if (!cover.bol) continue;
+      coveredBols.add(String(cover.bol));
+      const whReady = warehouseReadyDate(cover.available || '');
+      const whDaysLeft = line.latest_ship && whReady ? diffDays(line.latest_ship, whReady) : '';
+      let action = '按当前计划跟进清关、送仓和仓库收货。';
+      if (cover.port_delay_risk || isPortDelayReliability(cover.reliability)) {{
+        action = '当前节点标注异常且无新的预计到仓日，不可作为可靠覆盖；请立即催货代确认提柜/送仓时间。';
+      }} else if (whDaysLeft !== '' && whDaysLeft < 0) {{
+        action = `仓库备货后将晚 ${{Math.abs(whDaysLeft)}} 天；催货代送仓、仓库优先卸货，并建议客户交期改至 ${{suggestedCustomerDate(line, whReady)}}。`;
+      }} else if (whDaysLeft !== '' && whDaysLeft <= 3) {{
+        action = '仓库备货时间很紧，请优先安排清关、送仓、卸货和备货。';
+      }}
+      rows.push({{
+        bol:cover.bol,
+        po:cover.po || '',
+        sku:line.sku,
+        so:line.so,
+        customer:line.customer,
+        delivery_center:line.delivery_center,
+        qty:Math.round(Number(cover.qty || 0)),
+        required_arrival:line.required_arrival,
+        latest_wh_ship:line.latest_ship,
+        port_eta:cover.port_eta || '',
+        planned_wh_eta:cover.available || '',
+        warehouse_ready_date:whReady,
+        warehouse_days_left:whDaysLeft,
+        status:line.status,
+        action,
+      }});
+    }}
+  }}
+  // Keep an explicit explanation for a BOL that is not currently needed by
+  // any open SO. A blank detail table otherwise looks like a failed filter.
+  const unallocatedBols = new Map();
+  for (const [sku, pos] of Object.entries(window.SCM_DATA.future_po_by_sku || {{}})) {{
+    for (const po of usableFuturePos(sku)) {{
+      if (!po.bol || coveredBols.has(String(po.bol))) continue;
+      const key = String(po.bol);
+      const row = unallocatedBols.get(key) || {{bol:key, pos:new Set(), qty:0}};
+      row.pos.add(po.po || '');
+      row.qty += Number(po.qty || 0);
+      unallocatedBols.set(key, row);
+    }}
+  }}
+  for (const row of unallocatedBols.values()) {{
+    rows.push({{
+      bol:row.bol,
+      po:[...row.pos].filter(Boolean).join('; '),
+      sku:'', so:'', customer:'', delivery_center:'', qty:Math.round(row.qty),
+      required_arrival:'', latest_wh_ship:'', port_eta:'', planned_wh_eta:'', warehouse_ready_date:'', warehouse_days_left:'',
+      status:'OK',
+      action:'当前未被未交货 SO 实际分配，现有库存已覆盖相关订单；该 BOL 暂不构成交期风险。',
+    }});
+  }}
+  return rows.sort((a,b) => String(a.bol).localeCompare(String(b.bol)) || String(a.latest_wh_ship || '9999-12-31').localeCompare(String(b.latest_wh_ship || '9999-12-31')) || String(a.so).localeCompare(String(b.so)) || String(a.sku).localeCompare(String(b.sku)));
+}}
+function buildFactoryShipmentRows(view) {{
+  const groups = new Map();
+  const today = window.SCM_DATA.generated_at || '';
+  for (const po of (window.SCM_DATA.purchase_rows || [])) {{
+    if (!po.po || !po.sku || !po.factory_date || po.etd || po.actual_receipt_date) continue;
+    if (String(po.factory_date) > String(today)) continue;
+    const key = String(po.po);
+    const g = groups.get(key) || {{
+      po:key, urgent_skus:new Set(), urgent_sos:new Set(), affected_sos:new Set(), affected_skus:new Set(),
+      earliest_required_arrival:'', latest_wh_ship:'', latest_wh_arrival:'', latest_factory_ship:'',
+      planned_factory_ship:'', factory_delay_days:0, qty:0, action:'', status:'Lead Time Watch',
+    }};
+    const relatedLines = view.lines.filter(line => String(line.sku || '') === String(po.sku || ''));
+    g.urgent_skus.add(po.sku);
+    g.affected_skus.add(po.sku);
+    g.qty += Number(po.qty || 0);
+    if (!g.planned_factory_ship || po.factory_date < g.planned_factory_ship) g.planned_factory_ship = po.factory_date;
+    for (const line of relatedLines) {{
+      g.affected_sos.add(line.so);
+      g.urgent_sos.add(line.so);
+      if (!g.earliest_required_arrival || (line.required_arrival && line.required_arrival < g.earliest_required_arrival)) g.earliest_required_arrival = line.required_arrival;
+      if (!g.latest_wh_ship || (line.latest_ship && line.latest_ship < g.latest_wh_ship)) g.latest_wh_ship = line.latest_ship;
+    }}
+    groups.set(key, g);
+  }}
+  return [...groups.values()].map(g => {{
+    g.latest_wh_arrival = g.latest_wh_ship ? addDays(g.latest_wh_ship, -7) : '';
+    g.latest_factory_ship = latestFactoryDate(g.latest_wh_arrival);
+    g.factory_delay_days = g.planned_factory_ship ? Math.max(diffDays(today, g.planned_factory_ship), 0) : 0;
+    if (g.latest_factory_ship && g.latest_factory_ship < today) {{
+      g.status = 'Critical Risk';
+      g.action = `工厂计划发货日已逾期 ${{g.factory_delay_days}} 天，且最晚工厂发货日 ${{g.latest_factory_ship}} 已过；立即确认是否已交货给货代、索取 ETD/BOL，并沟通受影响客户交期。`;
+    }} else if (g.latest_factory_ship && g.planned_factory_ship > g.latest_factory_ship) {{
+      g.status = 'Lead Time Watch';
+      g.action = `尚未出港，计划工厂发货日比最晚工厂发货日晚 ${{diffDays(g.planned_factory_ship, g.latest_factory_ship)}} 天；需提前发货并取得 ETD。`;
+    }} else {{
+      g.status = 'Lead Time Watch';
+      g.action = `工厂计划发货日已逾期 ${{g.factory_delay_days}} 天但仍无 ETD；请确认是否已交货给货代。最晚工厂发货日为 ${{g.latest_factory_ship || '暂无订单红线'}}。`;
+    }}
+    return {{
+      ...g,
+      urgent_skus:[...g.urgent_skus].join('; '),
+      urgent_sos:[...g.urgent_sos].join('; '),
+      affected_so_count:g.affected_sos.size,
+      affected_sku_count:g.affected_skus.size,
+      qty:Math.round(g.qty),
+    }};
+  }}).sort((a,b) => statusRank(a.status) - statusRank(b.status) || String(a.latest_factory_ship || '9999-12-31').localeCompare(String(b.latest_factory_ship || '9999-12-31')) || String(a.po).localeCompare(String(b.po)));
 }}
 function renderDynamicViews() {{
   const view = currentViewData();
@@ -2258,6 +2379,8 @@ function renderDynamicViews() {{
   const skuCoverageLadder = buildSkuCoverageLadder(view);
   const needByRows = buildInboundNeedByRows(view);
   const allInboundRows = buildAllInboundShipmentRows(view);
+  const bolDetailRows = buildBolDetailRows(view);
+  const factoryShipmentRows = buildFactoryShipmentRows(view);
   const portArrivalRows = buildPortArrivalReminderRows();
   const whShipRows = buildWarehouseShipReminderRows(view);
   const dueEmailRows = emailRows.filter(x => ['Overdue','Due Today','Upcoming'].includes(x.notice_status));
@@ -2282,16 +2405,16 @@ function renderDynamicViews() {{
     simplePanel('SKU 缺货跟进', skuRows, [['status','状态'],['sku','SKU'],['product','产品'],['current_onhand','当前库存'],['open_demand','未交货需求'],['confirmed_incoming_qty','确认在途'],['planned_incoming_qty','预计在途'],['port_delay_qty','港口滞留待确认'],['shortage_qty','可靠缺口数量'],['issue_qty','风险数量'],['follow_po','跟进PO'],['follow_bol','跟进BOL'],['port_eta','预计到港日'],['cover_eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['latest_wh_arrival','最晚美仓发货日'],['gap_days','差异天数'],['affected_so_count','影响SO数'],['affected_sos','影响SO'],['action','处理建议']], '库存、需求、在途、缺口，以及需要跟进的 PO/BOL。港口滞留待确认不计入可靠覆盖。差异天数优先按“仓库备货后可发货日”计算。') +
     simplePanel('SKU 覆盖阶梯', skuCoverageLadder, [['status','状态'],['sku','SKU'],['product','产品'],['step','库存/PO'],['bol','BOL'],['port_eta','预计到港日'],['eta','预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['reliability','可靠性'],['step_qty','数量'],['cumulative_supply','可靠累计供应'],['total_demand','未交货需求'],['remaining_gap','该节点后缺口'],['conclusion','结论']], '按 SKU 从上往下看：现有库存和每个 PO 到仓后，何时能完全覆盖未交货需求。港口滞留且无新送仓时间的货物不计入可靠累计供应。') +
     auditPanel;
-  const factoryCols = [['po','PO'],['urgent_skus','紧急SKU'],['urgent_sos','紧急SO'],['earliest_required_arrival','最早客户交期'],['latest_wh_ship','最晚美仓发货日'],['latest_wh_arrival','最晚到仓红线'],['latest_factory_ship','最晚工厂发货日'],['planned_factory_ship','计划工厂发货日'],['current_wh_eta','当前预计到仓日'],['gap_days','差异天数'],['affected_so_count','影响SO数'],['affected_sku_count','影响SKU数'],['qty','数量'],['action','处理建议']];
-  const inboundCols = [['status','状态'],['bol','BOL'],['related_pos','相关PO'],['sku_count','SKU数'],['qty','数量'],['sailing_date','预计出港日'],['port_eta','预计到港日'],['port_ata','实际到港日'],['current_status','当前节点'],['newest_ewa','最新预计到仓日'],['planned_wh_eta','当前预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['earliest_so','最早影响SO'],['earliest_latest_ship','最早SO最晚发货日'],['days_margin','备货后余量'],['action','处理建议']];
-  const bolCols = [['bol','BOL'],['related_pos','相关PO'],['urgent_line_count','紧急行数'],['later_so_count','后续SO数'],['urgent_skus','紧急SKU'],['earliest_required_arrival','最早客户交期'],['latest_wh_ship','最晚美仓发货日'],['port_eta','预计到港日'],['planned_wh_eta','计划到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['warehouse_days_left','仓库备货后余量'],['suggested_customer_date','建议客户交期'],['affected_so_count','影响SO数'],['affected_sku_count','影响SKU数'],['qty','数量'],['forwarder_action','货代处理建议'],['warehouse_action','仓库处理建议']];
+  const factoryCols = [['status','状态'],['po','PO'],['urgent_skus','涉及SKU'],['urgent_sos','涉及未交货SO'],['earliest_required_arrival','最早客户交期'],['latest_wh_ship','最晚美仓发货日'],['latest_wh_arrival','最晚到仓红线'],['latest_factory_ship','最晚工厂发货日'],['planned_factory_ship','计划工厂发货日'],['factory_delay_days','计划发货逾期天数'],['affected_so_count','影响SO数'],['affected_sku_count','影响SKU数'],['qty','数量'],['action','处理建议']];
+  const inboundCols = [['status','状态'],['bol','BOL'],['related_pos','相关PO'],['sku_count','SKU数'],['qty','数量'],['sailing_date','预计出港日'],['port_eta','预计到港日'],['port_ata','实际到港日'],['current_status','当前节点'],['newest_ewa','最新预计到仓日'],['planned_wh_eta','当前预计到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['earliest_so','最早影响SO'],['earliest_required_arrival','最早客户交期'],['earliest_latest_ship','最早SO最晚发货日'],['days_margin','备货后余量'],['affected_so_count','实际影响SO数'],['affected_sku_count','实际影响SKU数'],['action','处理建议']];
+  const bolCols = [['status','状态'],['bol','BOL'],['related_pos','相关PO'],['affected_so_count','实际影响SO数'],['affected_sku_count','实际影响SKU数'],['sku_count','本船SKU数'],['qty','数量'],['earliest_so','最早影响SO'],['earliest_required_arrival','最早客户交期'],['earliest_latest_ship','最早美仓发货日'],['port_eta','预计到港日'],['planned_wh_eta','计划到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['days_margin','备货后余量'],['action','处理建议']];
   const bolLineCols = [['bol','BOL'],['po','PO'],['sku','SKU'],['so','SO/CI'],['customer','客户'],['delivery_center','客户仓'],['qty','数量'],['required_arrival','客户要求到仓日'],['latest_wh_ship','最晚美仓发货日'],['port_eta','预计到港日'],['planned_wh_eta','计划到仓日'],['warehouse_ready_date','仓库备货后可发货日'],['warehouse_days_left','仓库备货后余量'],['status','状态'],['action','处理建议']];
   document.getElementById('logistics').innerHTML =
-    simplePanel('所有在途船期总览', allInboundRows, inboundCols, '每个 BOL 一行：显示 ETD 到港、预计到仓、仓库 7 天备货后可发货日，以及最早受影响 SO 的最晚发货日。') +
-    simplePanel('工厂发货船期催办', logisticsRows.filter(x => x.category === 'Factory PO Follow-up'), factoryCols, '按 PO 跟进供应商：哪些 SKU/SO 受影响，以及最晚需要工厂什么时候发货。') +
-    simplePanel('提单清关送仓汇总', logisticsRows.filter(x => x.category === 'BOL Inbound Summary'), bolCols, '一行一个 BOL。点击 BOL 可筛选下方紧急明细。', 'bolSummary') +
+    simplePanel('所有在途船期总览', allInboundRows, inboundCols, '每个 BOL 一行。风险只按该 BOL 实际覆盖到的未交货 SO 判断，不会因为同 SKU 的其他订单而误报。') +
+    simplePanel('工厂逾期未发货催办', factoryShipmentRows, factoryCols, '仅显示工厂计划发货日已到或已过、但 Purchase 仍没有 ETD 的 PO。最晚工厂发货日按“最晚到仓红线再倒推 37 天”计算。') +
+    simplePanel('提单清关送仓汇总', allInboundRows, bolCols, '一行一个 BOL。点击 BOL 可筛选下方该 BOL 实际覆盖的 SO 明细。', 'bolSummary') +
     '<div class="inline-filter" id="bolInlineFilter"><span id="bolInlineFilterText"></span><button id="clearBolInlineFilter">关闭 BOL 筛选</button></div>' +
-    simplePanel('提单紧急明细', logisticsRows.filter(x => x.category === 'BOL-SKU-SO Urgent Detail'), bolLineCols, '显示行动窗口内每条紧急 BOL-SKU-SO；较远期 SO 计入后续 SO 数。', 'bolUrgentDetail');
+    simplePanel('提单关联 SO 明细', bolDetailRows, bolLineCols, '显示该 BOL 实际分配到的每条 BOL-SKU-SO，正常订单也会保留，便于确认点击 BOL 后的影响范围。', 'bolUrgentDetail');
   document.getElementById('needby').innerHTML = simplePanel('在途最晚到仓红线', needByRows, [['status','状态'],['sku','SKU'],['product','产品'],['po','PO'],['bol','BOL'],['qty','数量'],['used_qty','已占用数量'],['current_wh_eta','当前预计到仓日'],['need_by_wh_date','最晚需要到仓日'],['need_source','需求来源'],['first_affected_so','最早影响SO'],['forecast_week','预测周'],['weekly_forecast','周预测'],['days_margin','到仓余量'],['reliability','可靠性'],['factory_date','工厂日期'],['sailing_date','预计出港日'],['port_eta','预计到港日'],['port_ata','实际到港日'],['current_status','当前节点'],['newest_ewa','最新预计到仓日'],['action','处理建议']], 'SO 需求的最晚需要到仓日 = SO 最晚美仓发货日 - 7 天仓库备货。到仓余量 = 最晚需要到仓日 - 当前预计到仓日；负数表示晚到，需要跟进。');
   renderTransitSettings();
   renderImportNotice();
