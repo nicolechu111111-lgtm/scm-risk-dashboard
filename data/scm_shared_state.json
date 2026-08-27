@@ -4537,6 +4537,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-08-27T01:22:26",
+      "action": "确认导入 SPS 新单",
+      "detail": "6 行 / po31963750_170186_218907.csv"
+    },
+    {
       "time": "2026-08-26T02:17:46",
       "action": "上传 Follow Up",
       "detail": "SCM Follow Up (4).xlsx"
