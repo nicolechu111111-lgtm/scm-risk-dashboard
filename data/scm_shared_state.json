@@ -9483,6 +9483,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-09-09T02:14:12",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up2.xlsx"
+    },
+    {
       "time": "2026-09-09T02:08:53",
       "action": "标记 SPS SKU 已取消",
       "detail": "860738154 / CPWJ0018 / 销售确认从 SO 删除"
