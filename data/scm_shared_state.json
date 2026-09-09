@@ -9268,6 +9268,14 @@
         "qty": 192,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-08-18T03:50:34"
+      },
+      "860738154__CPWJ0018": {
+        "order": "860738154",
+        "sku": "CPWJ0018",
+        "product": "MINI & MOE WOODEN BRIDGE",
+        "qty": 96,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-09T02:08:51"
       }
     }
   },
