@@ -9560,6 +9560,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-09-16T05:55:59",
+      "action": "标记 SPS SKU 已取消",
+      "detail": "31963750 / WJ-4 / 销售确认从 SO 删除"
+    },
+    {
       "time": "2026-09-16T05:55:42",
       "action": "标记 SPS SKU 已取消",
       "detail": "31963750 / SZP542-WH / 销售确认从 SO 删除"
