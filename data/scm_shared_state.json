@@ -9520,6 +9520,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-09-16T05:54:12",
+      "action": "标记 SPS SKU 已取消",
+      "detail": "31963750 / BOBO22-WH / 销售确认从 SO 删除"
+    },
+    {
       "time": "2026-09-16T05:52:04",
       "action": "上传 Follow Up",
       "detail": "SCM Follow Up2.xlsx"
