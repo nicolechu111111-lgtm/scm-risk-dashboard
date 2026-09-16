@@ -9544,6 +9544,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-09-16T05:55:26",
+      "action": "标记 SPS SKU 已取消",
+      "detail": "31963750 / R-8 / 销售确认从 SO 删除"
+    },
+    {
       "time": "2026-09-16T05:55:08",
       "action": "标记 SPS SKU 已取消",
       "detail": "31963750 / CFLS64000YE / 销售确认从 SO 删除"
