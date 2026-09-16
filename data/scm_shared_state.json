@@ -9288,6 +9288,14 @@
         "qty": 88,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-16T05:54:09"
+      },
+      "31963750__CFLS18000": {
+        "order": "31963750",
+        "sku": "CFLS18000",
+        "product": "MMO-GREEN APPLE CHEW",
+        "qty": 96,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-16T05:54:48"
       }
     },
     "sps_lines_seen_in_followup": {}
