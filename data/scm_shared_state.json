@@ -9312,6 +9312,14 @@
         "qty": 64,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-16T05:55:24"
+      },
+      "31963750__SZP542-WH": {
+        "order": "31963750",
+        "sku": "SZP542-WH",
+        "product": "MMO-BUBBLE WATER BOTTLE",
+        "qty": 210,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-16T05:55:40"
       }
     },
     "sps_lines_seen_in_followup": {}
