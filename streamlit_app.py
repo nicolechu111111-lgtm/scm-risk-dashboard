@@ -312,6 +312,9 @@ def default_shared_state() -> dict:
         "transit_settings": {"stateDays": {}, "dcDays": {}},
         "confirmed_sps_imports": [],
         "cancelled_sps_lines": {},
+        # 已确认 SPS 行曾出现在 Follow Up 的记录。用于识别后续从 Follow Up
+        # 删除的订单，避免它又以“待回填 SPS 新单”回到风险计算。
+        "sps_lines_seen_in_followup": {},
     }
 
 
@@ -327,6 +330,7 @@ def load_shared_state() -> dict:
     data.setdefault("transit_settings", {"stateDays": {}, "dcDays": {}})
     data.setdefault("confirmed_sps_imports", [])
     data.setdefault("cancelled_sps_lines", {})
+    data.setdefault("sps_lines_seen_in_followup", {})
     if not isinstance(data["manual_allocations"], dict):
         data["manual_allocations"] = {}
     if not isinstance(data["transit_settings"], dict):
@@ -337,6 +341,8 @@ def load_shared_state() -> dict:
         data["confirmed_sps_imports"] = []
     if not isinstance(data["cancelled_sps_lines"], dict):
         data["cancelled_sps_lines"] = {}
+    if not isinstance(data["sps_lines_seen_in_followup"], dict):
+        data["sps_lines_seen_in_followup"] = {}
     return data
 
 
@@ -424,6 +430,69 @@ def restore_backup(uploaded_backup) -> tuple[bool, str]:
         return False, f"恢复失败：{exc}"
 
 
+def sps_line_key(row: dict) -> str:
+    """Use the same stable SO-SKU key as the risk builder and SPS controls."""
+    return f"{normalize_order(row.get('order', ''))}__{normalize_sku(row.get('sku', ''))}"
+
+
+def reconcile_removed_followup_sps_lines(data: dict) -> int:
+    """Cancel confirmed SPS rows that were previously posted, then removed.
+
+    A confirmed SPS row is intentionally kept in the dashboard while it has
+    not yet been copied into Follow Up.  Once it has appeared in Follow Up,
+    its later absence means the user removed it, so it must no longer be
+    treated as an outstanding order.
+    """
+    state = load_shared_state()
+    confirmed_rows = [
+        row
+        for batch in state.get("confirmed_sps_imports", [])
+        if isinstance(batch, dict)
+        for row in (batch.get("new_rows") or [])
+        if isinstance(row, dict) and sps_line_key(row) != "__"
+    ]
+    if not confirmed_rows:
+        return 0
+
+    current_keys = {
+        str(key)
+        for key in (data.get("followup_order_sku_qty") or {}).keys()
+        if str(key)
+    }
+    seen = state.get("sps_lines_seen_in_followup", {})
+    if not isinstance(seen, dict):
+        seen = {}
+    cancelled = state.get("cancelled_sps_lines", {})
+    if not isinstance(cancelled, dict):
+        cancelled = {}
+
+    rows_by_key = {sps_line_key(row): row for row in confirmed_rows}
+    cancelled_count = 0
+    for key, row in rows_by_key.items():
+        if key in current_keys:
+            seen.setdefault(key, datetime.now().isoformat(timespec="seconds"))
+            continue
+        if key in seen and key not in cancelled:
+            cancelled[key] = {
+                "order": row.get("order", ""),
+                "sku": row.get("sku", ""),
+                "product": row.get("product", ""),
+                "qty": row.get("sps_qty", ""),
+                "reason": "系统检测：该订单曾在 Follow Up 中存在，后续上传时已删除",
+                "cancelled_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            cancelled_count += 1
+
+    changed = cancelled_count > 0 or seen != state.get("sps_lines_seen_in_followup", {})
+    if changed:
+        state["sps_lines_seen_in_followup"] = seen
+        state["cancelled_sps_lines"] = cancelled
+        save_shared_state(state)
+    if cancelled_count:
+        append_log("自动标记 Follow Up 已删除的 SPS SKU", str(cancelled_count))
+    return cancelled_count
+
+
 def recalculate(workbook: Path) -> tuple[bool, str]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -443,6 +512,21 @@ def recalculate(workbook: Path) -> tuple[bool, str]:
     )
     if result.returncode != 0:
         return False, result.stderr[-3000:] or result.stdout[-3000:] or "重新计算失败。"
+    # 首轮构建得到最新 Follow Up 索引；若检测到已回填后又删除的 SPS 行，
+    # 保存取消记录后再构建一次，使它立即从风险和库存计算中移除。
+    data = load_json_file(live_json(), {})
+    cancelled_count = reconcile_removed_followup_sps_lines(data)
+    if cancelled_count:
+        result = subprocess.run(
+            [sys.executable, str(BUILDER)],
+            cwd=str(ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return False, result.stderr[-3000:] or result.stdout[-3000:] or "自动取消后重新计算失败。"
+        return True, f"重新计算完成；已自动移除 {cancelled_count} 条后来从 Follow Up 删除的 SPS 订单行。"
     return True, "重新计算完成。"
 
 
@@ -1010,7 +1094,7 @@ def render_shared_sps_controls(data: dict) -> None:
             st.rerun()
 
     with st.sidebar.expander(f"待回填/已取消 SKU ({len(pending_rows)}/{len(cancelled)})", expanded=False):
-        st.caption("销售确认从 SO 删除的 SKU，请标记为“已取消/无需回填”。该 SKU 会保留历史，但不再参与风险、补货或导出。")
+        st.caption("订单已从 Follow Up 删除时，可在这里立即标记“已取消/无需回填”。以后已回填过的 SPS 订单再次从新版 Follow Up 消失，会自动停止参与风险、补货或导出。")
         if not pending_rows:
             st.caption("暂无待回填的已确认 SPS SKU。")
         for row in pending_rows[:80]:
