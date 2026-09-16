@@ -9320,6 +9320,14 @@
         "qty": 210,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-16T05:55:40"
+      },
+      "31963750__WJ-4": {
+        "order": "31963750",
+        "sku": "WJ-4",
+        "product": "MMO-CLOUD WATER BOTTLE",
+        "qty": 100,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-16T05:55:57"
       }
     },
     "sps_lines_seen_in_followup": {}
