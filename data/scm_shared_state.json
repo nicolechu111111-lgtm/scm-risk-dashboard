@@ -9280,8 +9280,17 @@
         "qty": 96,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-09T02:08:51"
+      },
+      "31963750__BOBO22-WH": {
+        "order": "31963750",
+        "sku": "BOBO22-WH",
+        "product": "MINI/MOE SILENT CRSTL RUN WHEEL LG 8.5-White",
+        "qty": 88,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-16T05:54:09"
       }
-    }
+    },
+    "sps_lines_seen_in_followup": {}
   },
   "upload_history": [
     {
