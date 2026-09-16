@@ -9304,6 +9304,14 @@
         "qty": 144,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-16T05:55:06"
+      },
+      "31963750__R-8": {
+        "order": "31963750",
+        "sku": "R-8",
+        "product": "MINI/MOE BENDABLE BIRCHWOOD FENCE",
+        "qty": 64,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-09-16T05:55:24"
       }
     },
     "sps_lines_seen_in_followup": {}
