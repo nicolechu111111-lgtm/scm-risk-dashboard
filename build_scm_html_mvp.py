@@ -294,14 +294,17 @@ def main():
     sum_case_pack_by_sku = {}
     purchase_suggestion_by_sku = {}
     sum_sku_col = col(sum_cols, "Item Code", default=0)
-    sum_onhand_col = col(sum_cols, "Onhand Stock", default=7 if ws_sum.max_column > 7 else 2)
+    # V2.0 retains the same business fields but uses shorter display names.
+    # Header lookup keeps the dashboard compatible with both versions without
+    # treating the future LA/HOU split as separate inventory yet.
+    sum_onhand_col = col(sum_cols, "Onhand Stock", "OH Stock", default=7 if ws_sum.max_column > 7 else 2)
     sum_total_stock_col = col(sum_cols, "Total Stock", default=None)
-    sum_inventory_turnover_col = col(sum_cols, "Inventory Turnover", default=None)
-    sum_forecast_col = col(sum_cols, "Weekly Forecast", default=None)
+    sum_inventory_turnover_col = col(sum_cols, "Inventory Turnover", "Inv. TO", default=None)
+    sum_forecast_col = col(sum_cols, "Weekly Forecast", "Wkly Fcst.", default=None)
     sum_lt_col = col(sum_cols, "LT", default=None)
     sum_ss_col = col(sum_cols, "SS", default=None)
     sum_moq_col = col(sum_cols, "MOQ", default=None)
-    sum_purchase_suggestion_col = col(sum_cols, "Purchase Suggestion", default=None)
+    sum_purchase_suggestion_col = col(sum_cols, "Purchase Suggestion", "Plan", default=None)
     sum_case_pack_col = col(sum_cols, "Case Pack", default=None)
     for _, row in iter_data_rows(ws_sum, sum_sku_col):
         sku = clean(value_at(row, sum_sku_col))
@@ -350,7 +353,9 @@ def main():
             shipment_control_rows.append(item)
             shipment_by_bol[bol] = item
     purchase_sku_col = col(purchase_cols, "Product Code", default=2)
-    purchase_po_col = col(purchase_cols, "PO/PI", default=4)
+    # V2.0 intentionally uses Comment as the purchase tracking label instead
+    # of a separate PO/PI column.  Prefer PO/PI when it exists in older files.
+    purchase_po_col = col(purchase_cols, "PO/PI", "Comment", default=4)
     purchase_qty_col = col(purchase_cols, "ORD QTY", default=6)
     purchase_factory_col = col(purchase_cols, "Factory Delivery Date", default=7)
     purchase_etd_col = col(purchase_cols, "ETD", "Sailing Date", default=8)
@@ -2261,9 +2266,11 @@ function buildAllInboundShipmentRows(view) {{
 }}
 function buildBolDetailRows(view) {{
   const rows = [];
+  const coveredBols = new Set();
   for (const line of view.lines) {{
     for (const cover of (line.cover_details || [])) {{
       if (!cover.bol) continue;
+      coveredBols.add(String(cover.bol));
       const whReady = warehouseReadyDate(cover.available || '');
       const whDaysLeft = line.latest_ship && whReady ? diffDays(line.latest_ship, whReady) : '';
       let action = '按当前计划跟进清关、送仓和仓库收货。';
@@ -2292,6 +2299,29 @@ function buildBolDetailRows(view) {{
         action,
       }});
     }}
+  }}
+  // Keep an explicit explanation for a BOL that is not currently needed by
+  // any open SO. A blank detail table otherwise looks like a failed filter.
+  const unallocatedBols = new Map();
+  for (const [sku, pos] of Object.entries(window.SCM_DATA.future_po_by_sku || {{}})) {{
+    for (const po of usableFuturePos(sku)) {{
+      if (!po.bol || coveredBols.has(String(po.bol))) continue;
+      const key = String(po.bol);
+      const row = unallocatedBols.get(key) || {{bol:key, pos:new Set(), qty:0}};
+      row.pos.add(po.po || '');
+      row.qty += Number(po.qty || 0);
+      unallocatedBols.set(key, row);
+    }}
+  }}
+  for (const row of unallocatedBols.values()) {{
+    rows.push({{
+      bol:row.bol,
+      po:[...row.pos].filter(Boolean).join('; '),
+      sku:'', so:'', customer:'', delivery_center:'', qty:Math.round(row.qty),
+      required_arrival:'', latest_wh_ship:'', port_eta:'', planned_wh_eta:'', warehouse_ready_date:'', warehouse_days_left:'',
+      status:'OK',
+      action:'当前未被未交货 SO 实际分配，现有库存已覆盖相关订单；该 BOL 暂不构成交期风险。',
+    }});
   }}
   return rows.sort((a,b) => String(a.bol).localeCompare(String(b.bol)) || String(a.latest_wh_ship || '9999-12-31').localeCompare(String(b.latest_wh_ship || '9999-12-31')) || String(a.so).localeCompare(String(b.so)) || String(a.sku).localeCompare(String(b.sku)));
 }}
