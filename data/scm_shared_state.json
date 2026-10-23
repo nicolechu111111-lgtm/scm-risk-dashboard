@@ -12450,6 +12450,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-10-23T01:18:10",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up V2.0.2.xlsx"
+    },
+    {
       "time": "2026-10-21T03:10:59",
       "action": "确认导入 SPS 新单",
       "detail": "5 行 / po32403374_170186_325436.csv"
