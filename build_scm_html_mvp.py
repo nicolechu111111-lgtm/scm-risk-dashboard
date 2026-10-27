@@ -253,7 +253,7 @@ def main():
     product_upc = {}
     case_pack_by_sku = {}
     upc_to_sku = {}
-    product_sku_col = col(product_cols, "Item Code", default=0)
+    product_sku_col = col(product_cols, "Item Code", "Item", default=0)
     product_upc_col = col(product_cols, "UPC", default=1)
     product_name_col = col(product_cols, "Product Name", default=2)
     product_cost_col = col(product_cols, "Cost", default=8)
@@ -293,6 +293,7 @@ def main():
     inventory_turnover_by_sku = {}
     sum_case_pack_by_sku = {}
     purchase_suggestion_by_sku = {}
+    extra_stock_by_sku = {}
     sum_sku_col = col(sum_cols, "Item Code", default=0)
     # V2.0 retains the same business fields but uses shorter display names.
     # Header lookup keeps the dashboard compatible with both versions without
@@ -306,6 +307,7 @@ def main():
     sum_moq_col = col(sum_cols, "MOQ", default=None)
     sum_purchase_suggestion_col = col(sum_cols, "Purchase Suggestion", "Plan", default=None)
     sum_case_pack_col = col(sum_cols, "Case Pack", default=None)
+    sum_extra_col = col(sum_cols, "Extra", default=None)
     for _, row in iter_data_rows(ws_sum, sum_sku_col):
         sku = clean(value_at(row, sum_sku_col))
         if sku:
@@ -318,6 +320,7 @@ def main():
             moq_by_sku[sku] = as_num(value_at(row, sum_moq_col))
             purchase_suggestion_by_sku[sku] = as_num(value_at(row, sum_purchase_suggestion_col))
             sum_case_pack_by_sku[sku] = as_num(value_at(row, sum_case_pack_col))
+            extra_stock_by_sku[sku] = as_num(value_at(row, sum_extra_col))
 
     future_pos_by_sku = defaultdict(list)
     purchase_rows = []
@@ -362,6 +365,7 @@ def main():
     purchase_port_eta_col = col(purchase_cols, "ETA", "ETD（到港）", "ETD(到港)", default=9)
     purchase_receipt_col = col(purchase_cols, "AWA", "ATD（到仓）", "ATD（到港）", "ATD", default=10)
     purchase_bol_col = col(purchase_cols, "BOL", default=16)
+    purchase_remark_col = col(purchase_cols, "备注", "Remark", default=None)
     for i, row in iter_data_rows(ws_purchase, purchase_sku_col):
         sku = clean(value_at(row, purchase_sku_col))
         if not sku:
@@ -386,6 +390,7 @@ def main():
         available_date = None
         reliability = ""
         is_received = bool(actual_receipt)
+        is_on_hold = "暂缓发货" in clean(value_at(row, purchase_remark_col)) and not is_received
         if is_received:
             reliability = "已到货"
             arrived_po_rows.append(
@@ -402,6 +407,8 @@ def main():
                     "status": "已到货，已从未来在途排除",
                 }
             )
+        elif is_on_hold:
+            reliability = "暂缓发货"
         elif shipment_is_risk and not shipment_newest_ewa:
             # An explicit abnormal port status with no revised warehouse ETA is
             # intentionally retained as an unreliable lot. It can show which
@@ -798,7 +805,7 @@ def main():
                 "sku": sku,
                 "product": product_name.get(sku, ""),
                 "current_onhand": int(current_onhand),
-                "weekly_forecast": int(weekly_forecast_by_sku.get(sku, 0)),
+                "weekly_forecast": weekly_forecast_by_sku.get(sku, 0),
                 "lead_weeks": sum_lt_by_sku.get(sku, lead_weeks.get(sku, 10)),
                 "safety_stock_weeks": safety_stock_by_sku.get(sku, 0),
                 "moq": int(moq_by_sku.get(sku, 0)),
@@ -905,9 +912,9 @@ def main():
         pos = future_pos_by_sku.get(sku, [])
         confirmed_incoming = int(sum(po["qty"] for po in pos if po["reliability"] not in {"Planned ETA", "预计在途", "港口滞留-待确认"}))
         planned_incoming = int(sum(po["qty"] for po in pos if po["reliability"] in {"Planned ETA", "预计在途"}))
-        weekly_forecast = int(weekly_forecast_by_sku.get(sku, 0))
-        lead_time_weeks = int(sum_lt_by_sku.get(sku, lead_weeks.get(sku, 10)) or 0)
-        safety_weeks = int(safety_stock_by_sku.get(sku, 0) or 0)
+        weekly_forecast = weekly_forecast_by_sku.get(sku, 0)
+        lead_time_weeks = sum_lt_by_sku.get(sku, lead_weeks.get(sku, 10)) or 0
+        safety_weeks = safety_stock_by_sku.get(sku, 0) or 0
         moq = int(moq_by_sku.get(sku, 0) or 0)
         case_pack = int(sum_case_pack_by_sku.get(sku, 0) or case_pack_by_sku.get(sku, 0) or 0)
         total_stock = int(total_stock_by_sku.get(sku, 0))
@@ -915,7 +922,8 @@ def main():
         if not current_turnover_weeks and weekly_forecast:
             current_turnover_weeks = round(total_stock / weekly_forecast, 1)
         target_weeks = lead_time_weeks + safety_weeks + 2
-        target_stock = int(weekly_forecast * max(target_weeks, 0))
+        extra_stock = extra_stock_by_sku.get(sku, 0)
+        target_stock = weekly_forecast * max(target_weeks, 0) + extra_stock
         raw_gap = max(target_stock - total_stock, 0)
         rounded_qty = int(math.ceil(raw_gap / case_pack) * case_pack) if raw_gap and case_pack else int(raw_gap)
         sum_purchase_suggestion = int(purchase_suggestion_by_sku.get(sku, 0))
@@ -938,6 +946,7 @@ def main():
                 "buffer_weeks": 2,
                 "target_weeks": target_weeks,
                 "target_stock": target_stock,
+                "extra_stock": extra_stock,
                 "formula_gap": raw_gap,
                 "case_pack": case_pack,
                 "moq": moq,
@@ -947,7 +956,7 @@ def main():
                 "action": (
                     f"建议下单 {rounded_qty}；公式缺口 {raw_gap}，已按箱规 {case_pack or '-'} 向上取整。"
                     if rounded_qty
-                    else "Total Stock 可覆盖 LT+SS+2 周预测目标。"
+                    else "Total Stock 可覆盖 LT+SS+2 周预测及旺季额外备货目标。"
                 ),
             }
         )
@@ -1005,6 +1014,7 @@ def main():
         "generated_at": TODAY.isoformat(),
         "base_date": base_date.isoformat(),
         "source_workbook": str(WORKBOOK),
+        "sales_export_columns": [clean(value) for value in next(ws_sales.iter_rows(min_row=1, max_row=1, values_only=True)) if clean(value)],
         "shared_state_mode": SHARED_STATE_MODE,
         "shared_email_mode": SHARED_EMAIL_MODE,
         "email_sent": load_shared_email_sent(),
@@ -1028,7 +1038,7 @@ def main():
                 "sku": sku,
                 "product": product_name.get(sku, ""),
                 "current_onhand": int(qty),
-                "weekly_forecast": int(weekly_forecast_by_sku.get(sku, 0)),
+                "weekly_forecast": weekly_forecast_by_sku.get(sku, 0),
                 "lead_weeks": sum_lt_by_sku.get(sku, lead_weeks.get(sku, 10)),
                 "safety_stock_weeks": safety_stock_by_sku.get(sku, 0),
                 "moq": int(moq_by_sku.get(sku, 0)),
@@ -1302,7 +1312,7 @@ td.long, th.long {{ min-width:240px; }}
   <div class="tab" id="logistics"></div>
   <div class="tab" id="needby"></div>
   <div class="tab" id="replenishment">
-    {table("Replenishment Suggestion / 预测补货建议", data["replenishment"], [("status","状态"),("sku","SKU"),("product","产品"),("weekly_forecast","周预测"),("current_turnover_weeks","当前周转周数"),("lead_time_weeks","LT周数"),("safety_stock_weeks","安全库存周数"),("buffer_weeks","缓冲周数"),("target_weeks","目标周数"),("target_stock","目标库存"),("total_stock","Total Stock"),("formula_gap","公式缺口"),("case_pack","箱规"),("suggested_po_qty","建议下单量"),("sum_purchase_suggestion","Sum原建议"),("order_risk_gap","订单风险缺口"),("onhand","当前库存"),("open_demand","未交货需求"),("confirmed_incoming","确认在途"),("planned_incoming","预计在途"),("moq","MOQ"),("action","说明")], "主公式：MAX(0, Weekly Forecast × (LT + SS + 2) - Total Stock)，再按箱规向上取整。订单风险缺口只做参考，不参与建议采购量。")}
+    {table("Replenishment Suggestion / 预测补货建议", data["replenishment"], [("status","状态"),("sku","SKU"),("product","产品"),("weekly_forecast","周预测"),("current_turnover_weeks","当前周转周数"),("lead_time_weeks","LT周数"),("safety_stock_weeks","安全库存周数"),("buffer_weeks","缓冲周数"),("target_weeks","目标周数"),("target_stock","目标库存"),("extra_stock","旺季额外备货"),("total_stock","Total Stock"),("formula_gap","公式缺口"),("case_pack","箱规"),("suggested_po_qty","建议下单量"),("sum_purchase_suggestion","Sum原建议"),("order_risk_gap","订单风险缺口"),("onhand","当前库存"),("open_demand","未交货需求"),("confirmed_incoming","确认在途"),("planned_incoming","预计在途"),("moq","MOQ"),("action","说明")], "主公式：MAX(0, Weekly Forecast × (LT + SS + 2) + Extra - Total Stock)，再按箱规向上取整。订单风险缺口只做参考，不参与建议采购量。")}
   </div>
   <div class="tab" id="transit"></div>
   <div class="tab" id="export">
@@ -2754,13 +2764,13 @@ const EXPORT_COLS = {{
   so_board:['status','so','customer','delivery_center','latest_ship','required_arrival','suggested_customer_date','line_count','issue_skus','critical_skus','planned_skus','watch_skus','confirmed_po_skus','action'],
   so_lines:['status','system_status','so','customer','delivery_center','sku','product','qty','risk_qty','system_risk_qty','manual_stock_qty','allocation_issue_skus','allocation_critical_skus','latest_ship','required_arrival','suggested_customer_date','stock_before','stock_used','cover_type','cover','uncovered','action'],
   sku_summary:['status','sku','product','current_onhand','open_demand','confirmed_incoming_qty','planned_incoming_qty','port_delay_qty','shortage_qty','issue_qty','follow_po','follow_bol','cover_eta','latest_wh_arrival','gap_days','affected_so_count','affected_sos','action'],
-  replenishment:['status','sku','product','weekly_forecast','current_turnover_weeks','lead_time_weeks','safety_stock_weeks','buffer_weeks','target_weeks','target_stock','total_stock','formula_gap','case_pack','suggested_po_qty','sum_purchase_suggestion','order_risk_gap','onhand','open_demand','confirmed_incoming','planned_incoming','moq','action'],
+  replenishment:['status','sku','product','weekly_forecast','current_turnover_weeks','lead_time_weeks','safety_stock_weeks','buffer_weeks','target_weeks','target_stock','extra_stock','total_stock','formula_gap','case_pack','suggested_po_qty','sum_purchase_suggestion','order_risk_gap','onhand','open_demand','confirmed_incoming','planned_incoming','moq','action'],
   po_impact:['po','sku_count','so_count','critical_lines','planned_lines','watch_lines','late_qty'],
   logistics_actions:['category','po','bol','related_pos','sku','so','customer','delivery_center','urgent_line_count','later_so_count','urgent_skus','earliest_required_arrival','required_arrival','latest_wh_ship','latest_wh_arrival','latest_factory_ship','planned_factory_ship','current_wh_eta','port_eta','planned_wh_eta','warehouse_days_left','suggested_customer_date','affected_so_count','affected_sku_count','qty','gap_days','status','forwarder_action','warehouse_action','action'],
   inbound_need_by:['status','sku','product','po','bol','qty','used_qty','current_wh_eta','need_by_wh_date','need_source','first_affected_so','forecast_week','weekly_forecast','days_margin','reliability','factory_date','sailing_date','port_eta','port_ata','current_status','newest_ewa','action'],
   manual_audit:['status','sku','product','current_onhand','manual_allocated','remaining_stock','remaining_risk_qty','decision_rows','possible_targets','action'],
   warehouse_email:['notice_status','so','customer','delivery_center','required_arrival','email_due_date','days_to_email','latest_ship','risk_status','line_count','issue_skus','sent_at','action'],
-  confirmed_sps_sales_rows:['Date','Item','Product Code','SO/CI','Zoho Order','ORD QTY','Unit Price','Total Sales','Customer','Delivery Center','ETD','ATD','Product Cost','Total Cost','Sales Order Update'],
+  confirmed_sps_sales_rows:window.SCM_DATA.sales_export_columns || ['Date','Item','Product Code','SO/CI','Zoho Order','ORD QTY','Unit Price','Total Sales','Customer','Delivery Center','ETD','ATD','Product Cost','Total Cost','Sales Order Update'],
 }};
 function projectRows(items, cols) {{
   if (!cols) return items;
@@ -2915,7 +2925,11 @@ function confirmedSpsSalesRows() {{
     ATD: '',
     'Product Cost': moneyValue(productCostForSku(x.sku)),
     'Total Cost': moneyValue(Number(x.sps_qty || 0) * productCostForSku(x.sku)),
-    'Sales Order Update': 'Imported from SPS; paste into Follow Up Sales.'
+    WH: '',
+    'Case Qty': '',
+    'Case Type': '',
+    'Total CBM': '',
+    'Sales Order Update': 'Imported from SPS; paste into Follow Up Sales. Check WH and packing fields.'
   }}));
 }}
 function warehouseEmailRows(view) {{
