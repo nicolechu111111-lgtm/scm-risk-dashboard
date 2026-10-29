@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import base64
+import hashlib
 import subprocess
 import sys
 import time
@@ -528,6 +529,14 @@ def recalculate(workbook: Path) -> tuple[bool, str]:
             return False, result.stderr[-3000:] or result.stdout[-3000:] or "自动取消后重新计算失败。"
         return True, f"重新计算完成；已自动移除 {cancelled_count} 条后来从 Follow Up 删除的 SPS 订单行。"
     return True, "重新计算完成。"
+
+
+def calculation_signature() -> str:
+    """Invalidate generated pages when either calculation or import code changes."""
+    digest = hashlib.sha256()
+    for source in (Path(__file__), BUILDER):
+        digest.update(source.read_bytes())
+    return digest.hexdigest()
 
 
 def date_text(value: str, delta_days: int = 0) -> str:
@@ -1209,13 +1218,16 @@ with st.sidebar:
     else:
         st.warning("尚未完成云端共享配置。应用重启后，已发送记录和当前 Follow Up 可能丢失。")
 
-if not live_html().exists() or not live_json().exists():
+signature_path = OUT_DIR / "calculation_signature.txt"
+saved_signature = signature_path.read_text(encoding="utf-8") if signature_path.exists() else ""
+if not live_html().exists() or not live_json().exists() or saved_signature != calculation_signature():
     current = latest_upload()
     if current:
         ok, message = recalculate(current)
         if not ok:
             st.error(message)
             st.stop()
+        signature_path.write_text(calculation_signature(), encoding="utf-8")
     else:
         st.info("请先在左侧上传最新版 Follow Up。")
         st.stop()
