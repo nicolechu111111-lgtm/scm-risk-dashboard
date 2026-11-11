@@ -14199,6 +14199,11 @@
   ],
   "operation_log": [
     {
+      "time": "2026-11-11T08:59:36",
+      "action": "上传 Follow Up",
+      "detail": "SCM Follow Up V2.0.2.xlsx"
+    },
+    {
       "time": "2026-11-09T07:42:01",
       "action": "仓库邮件标记已发送",
       "detail": "0020PM0036023"
