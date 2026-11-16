@@ -14713,6 +14713,14 @@
         "qty": 100,
         "reason": "销售确认从 SO 删除",
         "cancelled_at": "2026-09-16T05:55:57"
+      },
+      "0020PM0036901__BOBO22-GN": {
+        "order": "0020PM0036901",
+        "sku": "BOBO22-GN",
+        "product": "MINI/MOE SILENT CRSTL RUN WHEEL LG 8.5-Green",
+        "qty": 8,
+        "reason": "销售确认从 SO 删除",
+        "cancelled_at": "2026-11-16T01:57:30"
       }
     },
     "sps_lines_seen_in_followup": {}
