@@ -2887,8 +2887,14 @@ function isCancelledSpsLine(row) {{
 }}
 function pendingConfirmedSpsRows() {{
   const existing = followUpOrderSkuKeys();
-  return getConfirmedImports()
-    .flatMap(batch => batch.new_rows || [])
+  const imports = getConfirmedImports();
+  const newestFirst = window.SCM_DATA.shared_state_mode ? imports : [...imports].reverse();
+  const unique = new Map();
+  for (const row of newestFirst.flatMap(batch => batch.new_rows || [])) {{
+    const key = spsLineKey(row);
+    if (!unique.has(key)) unique.set(key, row);
+  }}
+  return [...unique.values()]
     .filter(x => !isExcludedSalesOrder(x.customer, x.order, x.dc))
     .filter(x => !isCancelledSpsLine(x))
     .filter(x => !existing.has(`${{normalizeOrder(x.order)}}__${{normalizeSku(x.sku)}}`));

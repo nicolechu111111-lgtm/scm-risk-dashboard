@@ -1033,14 +1033,14 @@ def render_shared_sps_controls(data: dict) -> None:
     confirmed = state.get("confirmed_sps_imports", [])
     cancelled = state.get("cancelled_sps_lines", {})
 
-    def sps_line_key(row: dict) -> str:
-        return f"{normalize_order(row.get('order'))}__{normalize_sku(row.get('sku'))}"
-
     followup_index = {str(key) for key in (data.get("followup_order_sku_qty") or {}).keys()}
-    confirmed_rows = [row for batch in confirmed for row in (batch.get("new_rows") or [])]
+    confirmed_rows = {}
+    for batch in confirmed:  # Shared batches are stored newest first.
+        for row in batch.get("new_rows") or []:
+            confirmed_rows.setdefault(sps_line_key(row), row)
     pending_rows = [
-        row for row in confirmed_rows
-        if sps_line_key(row) not in followup_index and sps_line_key(row) not in cancelled
+        row for key, row in confirmed_rows.items()
+        if key not in followup_index and key not in cancelled
     ]
 
     st.sidebar.divider()
